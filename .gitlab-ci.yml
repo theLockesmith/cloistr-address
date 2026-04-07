@@ -1,0 +1,34 @@
+stages:
+  - build
+  - push
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_NAME: registry.aegis-hq.xyz/coldforge/cloistr-address
+
+build:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $IMAGE_NAME:$CI_COMMIT_SHA .
+    - docker tag $IMAGE_NAME:$CI_COMMIT_SHA $IMAGE_NAME:latest
+    - docker push $IMAGE_NAME:$CI_COMMIT_SHA
+    - docker push $IMAGE_NAME:latest
+  only:
+    - main
+    - master
+
+# Build for merge requests (no push)
+build-mr:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - docker build -t $IMAGE_NAME:mr-$CI_MERGE_REQUEST_IID .
+  only:
+    - merge_requests
