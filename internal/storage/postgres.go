@@ -30,6 +30,7 @@ type Address struct {
 	ExpiresAt       *time.Time
 	GracePeriodEnds *time.Time
 	BanReason       *string
+	LastTransferAt  *time.Time
 }
 
 // AddressRelay represents a relay URL associated with an address
@@ -42,17 +43,17 @@ type AddressRelay struct {
 
 // AddressLightning represents Lightning Address configuration
 type AddressLightning struct {
-	AddressID       int64
-	Mode            string // "proxy", "nwc", "disabled"
-	ProxyAddress    *string
-	NWCConnection   *string
-	MinSendableMsat int64
-	MaxSendableMsat int64
-	CommentAllowed  int
-	AllowsNostr     bool
-	Enabled         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	AddressID        int64
+	Mode             string // "proxy", "nwc", "disabled"
+	ProxyAddress     string
+	NWCConnection    string
+	MinSendableMsats int64
+	MaxSendableMsats int64
+	CommentAllowed   int
+	AllowsNostr      bool
+	Enabled          bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // UsernameTier represents pricing tier for usernames
@@ -164,6 +165,7 @@ func (s *Storage) GetRelaysForAddress(ctx context.Context, addressID int64) ([]s
 // GetLightningConfig retrieves Lightning Address configuration for an address
 func (s *Storage) GetLightningConfig(ctx context.Context, addressID int64) (*AddressLightning, error) {
 	ln := &AddressLightning{}
+	var proxyAddr, nwcConn sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT address_id, mode, proxy_address, nwc_connection,
 		       min_sendable_msats, max_sendable_msats, comment_allowed,
@@ -171,8 +173,8 @@ func (s *Storage) GetLightningConfig(ctx context.Context, addressID int64) (*Add
 		FROM address_lightning
 		WHERE address_id = $1
 	`, addressID).Scan(
-		&ln.AddressID, &ln.Mode, &ln.ProxyAddress, &ln.NWCConnection,
-		&ln.MinSendableMsat, &ln.MaxSendableMsat, &ln.CommentAllowed,
+		&ln.AddressID, &ln.Mode, &proxyAddr, &nwcConn,
+		&ln.MinSendableMsats, &ln.MaxSendableMsats, &ln.CommentAllowed,
 		&ln.AllowsNostr, &ln.Enabled, &ln.CreatedAt, &ln.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -181,6 +183,8 @@ func (s *Storage) GetLightningConfig(ctx context.Context, addressID int64) (*Add
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lightning config: %w", err)
 	}
+	ln.ProxyAddress = proxyAddr.String
+	ln.NWCConnection = nwcConn.String
 	return ln, nil
 }
 
@@ -261,4 +265,114 @@ func (s *Storage) GetAllActiveAddresses(ctx context.Context, domain string) ([]*
 		addresses = append(addresses, addr)
 	}
 	return addresses, nil
+}
+
+// GetAddressRelays retrieves relay URLs for an address (alias for GetRelaysForAddress)
+func (s *Storage) GetAddressRelays(ctx context.Context, addressID int64) ([]string, error) {
+	return s.GetRelaysForAddress(ctx, addressID)
+}
+
+// UpsertLightningConfig creates or updates Lightning Address configuration
+func (s *Storage) UpsertLightningConfig(ctx context.Context, addressID int64, mode, proxyAddress string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO address_lightning (address_id, mode, proxy_address, enabled, updated_at)
+		VALUES ($1, $2, NULLIF($3, ''), true, NOW())
+		ON CONFLICT (address_id) DO UPDATE SET
+			mode = EXCLUDED.mode,
+			proxy_address = EXCLUDED.proxy_address,
+			enabled = CASE WHEN EXCLUDED.mode = 'disabled' THEN false ELSE true END,
+			updated_at = NOW()
+	`, addressID, mode, proxyAddress)
+	if err != nil {
+		return fmt.Errorf("failed to upsert lightning config: %w", err)
+	}
+	return nil
+}
+
+// TransferAddress transfers ownership of an address to a new pubkey
+func (s *Storage) TransferAddress(ctx context.Context, addressID int64, newPubkey string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE addresses
+		SET pubkey = $2,
+		    last_transfer_at = NOW(),
+		    updated_at = NOW()
+		WHERE id = $1
+	`, addressID, newPubkey)
+	if err != nil {
+		return fmt.Errorf("failed to transfer address: %w", err)
+	}
+	return nil
+}
+
+// RegisterAddress registers a new address for a pubkey
+func (s *Storage) RegisterAddress(ctx context.Context, username, domain, pubkey string) (*Address, error) {
+	addr := &Address{}
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO addresses (username, domain, pubkey, active, verified, created_at, updated_at)
+		VALUES ($1, $2, $3, true, false, NOW(), NOW())
+		RETURNING id, username, domain, pubkey, active, verified, created_at, updated_at
+	`, username, domain, pubkey).Scan(
+		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
+		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register address: %w", err)
+	}
+	return addr, nil
+}
+
+// AtomicRegisterAddress attempts to register a username atomically
+// Returns the address if successful, nil if username was taken
+func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, pubkey string) (*Address, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check availability within transaction
+	var exists bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM addresses
+			WHERE username = $1 AND domain = $2 AND active = true
+		)
+	`, username, domain).Scan(&exists)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check availability: %w", err)
+	}
+	if exists {
+		return nil, nil // Username taken
+	}
+
+	// Check reserved
+	err = tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM reserved_usernames WHERE username = $1)
+	`, username).Scan(&exists)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check reserved: %w", err)
+	}
+	if exists {
+		return nil, nil // Reserved
+	}
+
+	// Register
+	addr := &Address{}
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO addresses (username, domain, pubkey, active, verified, created_at, updated_at)
+		VALUES ($1, $2, $3, true, false, NOW(), NOW())
+		RETURNING id, username, domain, pubkey, active, verified, created_at, updated_at
+	`, username, domain, pubkey).Scan(
+		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
+		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert address: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return addr, nil
 }

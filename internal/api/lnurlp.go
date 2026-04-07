@@ -109,8 +109,8 @@ func (h *Handler) handleLNURLPConfig(c *gin.Context) {
 	response := LNURLPConfigResponse{
 		Tag:            "payRequest",
 		Callback:       callbackURL,
-		MinSendable:    lnConfig.MinSendableMsat,
-		MaxSendable:    lnConfig.MaxSendableMsat,
+		MinSendable:    lnConfig.MinSendableMsats,
+		MaxSendable:    lnConfig.MaxSendableMsats,
 		Metadata:       metadata,
 		CommentAllowed: lnConfig.CommentAllowed,
 		AllowsNostr:    lnConfig.AllowsNostr,
@@ -183,12 +183,12 @@ func (h *Handler) handleLNURLPCallback(c *gin.Context) {
 	}
 
 	// Validate amount
-	if amount < lnConfig.MinSendableMsat || amount > lnConfig.MaxSendableMsat {
+	if amount < lnConfig.MinSendableMsats || amount > lnConfig.MaxSendableMsats {
 		metrics.LNURLRequests.WithLabelValues("callback", "bad_request").Inc()
 		c.JSON(http.StatusOK, LNURLErrorResponse{
 			Status: "ERROR",
 			Reason: fmt.Sprintf("Amount must be between %d and %d millisatoshis",
-				lnConfig.MinSendableMsat, lnConfig.MaxSendableMsat),
+				lnConfig.MinSendableMsats, lnConfig.MaxSendableMsats),
 		})
 		return
 	}
@@ -196,7 +196,7 @@ func (h *Handler) handleLNURLPCallback(c *gin.Context) {
 	// Handle based on mode
 	switch lnConfig.Mode {
 	case "proxy":
-		h.handleProxyInvoice(c, *lnConfig.ProxyAddress, amount, comment)
+		h.handleProxyInvoice(c, lnConfig.ProxyAddress, amount, comment)
 	case "nwc":
 		// TODO: Implement NWC invoice generation
 		metrics.LNURLRequests.WithLabelValues("callback", "not_implemented").Inc()

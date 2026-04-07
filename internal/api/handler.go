@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"git.coldforge.xyz/coldforge/cloistr-address/internal/auth"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/config"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/metrics"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/storage"
@@ -59,8 +60,9 @@ func (h *Handler) Router() *gin.Engine {
 	}
 
 	// Authenticated API endpoints (require NIP-98)
-	// TODO: Add NIP-98 auth middleware
+	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
 	authAPI := r.Group("/api/v1")
+	authAPI.Use(auth.NIP98Middleware(nip98Validator))
 	{
 		// Address management
 		authAPI.GET("/addresses/me", h.getMyAddress)
@@ -70,6 +72,9 @@ func (h *Handler) Router() *gin.Engine {
 		authAPI.POST("/purchase/quote", h.getPurchaseQuote)
 		authAPI.POST("/purchase/invoice", h.createPurchaseInvoice)
 		authAPI.GET("/purchase/status/:id", h.getPurchaseStatus)
+
+		// Transfer
+		authAPI.POST("/addresses/transfer", h.transferAddress)
 	}
 
 	return r
