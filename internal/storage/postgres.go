@@ -66,6 +66,19 @@ type UsernameTier struct {
 	Enabled   bool
 }
 
+// CreditWithdrawal represents a withdrawal request
+type CreditWithdrawal struct {
+	ID               int64
+	Pubkey           string
+	AmountSats       int64
+	LightningAddress string
+	Status           string // pending, processing, completed, failed
+	PaymentHash      *string
+	ErrorMessage     *string
+	CreatedAt        time.Time
+	CompletedAt      *time.Time
+}
+
 // New creates a new storage instance
 func New(cfg config.DatabaseConfig) (*Storage, error) {
 	db, err := sql.Open("postgres", cfg.ConnectionString())
@@ -376,3 +389,297 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 
 	return addr, nil
 }
+
+// Credit operations
+
+// GetCredits returns the credit balance for a pubkey
+func (s *Storage) GetCredits(ctx context.Context, pubkey string) (int64, error) {
+	var balance int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT balance_sats FROM pubkey_credits WHERE pubkey = $1
+	`, pubkey).Scan(&balance)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get credits: %w", err)
+	}
+	return balance, nil
+}
+
+// AddCredits adds credits to a pubkey and records the transaction
+func (s *Storage) AddCredits(ctx context.Context, pubkey string, amountSats int64, reason, referenceID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Upsert credit balance
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO pubkey_credits (pubkey, balance_sats)
+		VALUES ($1, $2)
+		ON CONFLICT (pubkey) DO UPDATE SET
+			balance_sats = pubkey_credits.balance_sats + $2,
+			updated_at = NOW()
+	`, pubkey, amountSats)
+	if err != nil {
+		return fmt.Errorf("failed to update credits: %w", err)
+	}
+
+	// Record history
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO credit_history (pubkey, amount_sats, reason, reference_id)
+		VALUES ($1, $2, $3, $4)
+	`, pubkey, amountSats, reason, referenceID)
+	if err != nil {
+		return fmt.Errorf("failed to record credit history: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return nil
+}
+
+// DeductCredits deducts credits from a pubkey if sufficient balance
+// Returns error if insufficient balance
+func (s *Storage) DeductCredits(ctx context.Context, pubkey string, amountSats int64, reason, referenceID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check and deduct
+	var newBalance int64
+	err = tx.QueryRowContext(ctx, `
+		UPDATE pubkey_credits
+		SET balance_sats = balance_sats - $2, updated_at = NOW()
+		WHERE pubkey = $1 AND balance_sats >= $2
+		RETURNING balance_sats
+	`, pubkey, amountSats).Scan(&newBalance)
+	if err == sql.ErrNoRows {
+		return ErrInsufficientCredits
+	}
+	if err != nil {
+		return fmt.Errorf("failed to deduct credits: %w", err)
+	}
+
+	// Record history (negative amount)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO credit_history (pubkey, amount_sats, reason, reference_id)
+		VALUES ($1, $2, $3, $4)
+	`, pubkey, -amountSats, reason, referenceID)
+	if err != nil {
+		return fmt.Errorf("failed to record credit history: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return nil
+}
+
+// CreateWithdrawalRequest creates a new withdrawal request
+// Deducts credits atomically when creating the request
+func (s *Storage) CreateWithdrawalRequest(ctx context.Context, pubkey string, amountSats int64, lightningAddress string) (*CreditWithdrawal, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check and deduct credits
+	var newBalance int64
+	err = tx.QueryRowContext(ctx, `
+		UPDATE pubkey_credits
+		SET balance_sats = balance_sats - $2, updated_at = NOW()
+		WHERE pubkey = $1 AND balance_sats >= $2
+		RETURNING balance_sats
+	`, pubkey, amountSats).Scan(&newBalance)
+	if err == sql.ErrNoRows {
+		return nil, ErrInsufficientCredits
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to deduct credits: %w", err)
+	}
+
+	// Create withdrawal request
+	withdrawal := &CreditWithdrawal{}
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO credit_withdrawals (pubkey, amount_sats, lightning_address, status)
+		VALUES ($1, $2, $3, 'pending')
+		RETURNING id, pubkey, amount_sats, lightning_address, status, created_at
+	`, pubkey, amountSats, lightningAddress).Scan(
+		&withdrawal.ID, &withdrawal.Pubkey, &withdrawal.AmountSats,
+		&withdrawal.LightningAddress, &withdrawal.Status, &withdrawal.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
+	}
+
+	// Record in credit history
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO credit_history (pubkey, amount_sats, reason, reference_id)
+		VALUES ($1, $2, 'withdrawal_request', $3)
+	`, pubkey, -amountSats, fmt.Sprintf("withdrawal_%d", withdrawal.ID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to record credit history: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return withdrawal, nil
+}
+
+// GetPendingWithdrawals returns all pending withdrawal requests
+func (s *Storage) GetPendingWithdrawals(ctx context.Context) ([]*CreditWithdrawal, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, pubkey, amount_sats, lightning_address, status, payment_hash, error_message, created_at, completed_at
+		FROM credit_withdrawals
+		WHERE status = 'pending'
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pending withdrawals: %w", err)
+	}
+	defer rows.Close()
+
+	var withdrawals []*CreditWithdrawal
+	for rows.Next() {
+		w := &CreditWithdrawal{}
+		var paymentHash, errorMsg sql.NullString
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&w.ID, &w.Pubkey, &w.AmountSats, &w.LightningAddress, &w.Status,
+			&paymentHash, &errorMsg, &w.CreatedAt, &completedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan withdrawal: %w", err)
+		}
+		if paymentHash.Valid {
+			w.PaymentHash = &paymentHash.String
+		}
+		if errorMsg.Valid {
+			w.ErrorMessage = &errorMsg.String
+		}
+		if completedAt.Valid {
+			w.CompletedAt = &completedAt.Time
+		}
+		withdrawals = append(withdrawals, w)
+	}
+	return withdrawals, nil
+}
+
+// UpdateWithdrawalStatus updates a withdrawal request status
+func (s *Storage) UpdateWithdrawalStatus(ctx context.Context, id int64, status string, paymentHash, errorMessage *string) error {
+	var completedAt interface{}
+	if status == "completed" || status == "failed" {
+		completedAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE credit_withdrawals
+		SET status = $2,
+		    payment_hash = COALESCE($3, payment_hash),
+		    error_message = COALESCE($4, error_message),
+		    completed_at = COALESCE($5, completed_at)
+		WHERE id = $1
+	`, id, status, paymentHash, errorMessage, completedAt)
+	if err != nil {
+		return fmt.Errorf("failed to update withdrawal status: %w", err)
+	}
+	return nil
+}
+
+// RefundFailedWithdrawal returns credits for a failed withdrawal
+func (s *Storage) RefundFailedWithdrawal(ctx context.Context, withdrawalID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Get withdrawal details
+	var pubkey string
+	var amountSats int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT pubkey, amount_sats FROM credit_withdrawals WHERE id = $1
+	`, withdrawalID).Scan(&pubkey, &amountSats)
+	if err != nil {
+		return fmt.Errorf("failed to get withdrawal: %w", err)
+	}
+
+	// Add credits back
+	_, err = tx.ExecContext(ctx, `
+		UPDATE pubkey_credits
+		SET balance_sats = balance_sats + $2, updated_at = NOW()
+		WHERE pubkey = $1
+	`, pubkey, amountSats)
+	if err != nil {
+		return fmt.Errorf("failed to refund credits: %w", err)
+	}
+
+	// Record in history
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO credit_history (pubkey, amount_sats, reason, reference_id)
+		VALUES ($1, $2, 'withdrawal_refund', $3)
+	`, pubkey, amountSats, fmt.Sprintf("withdrawal_%d", withdrawalID))
+	if err != nil {
+		return fmt.Errorf("failed to record refund: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	return nil
+}
+
+// GetWithdrawalsByPubkey returns withdrawal history for a pubkey
+func (s *Storage) GetWithdrawalsByPubkey(ctx context.Context, pubkey string, limit int) ([]*CreditWithdrawal, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, pubkey, amount_sats, lightning_address, status, payment_hash, error_message, created_at, completed_at
+		FROM credit_withdrawals
+		WHERE pubkey = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, pubkey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get withdrawals: %w", err)
+	}
+	defer rows.Close()
+
+	var withdrawals []*CreditWithdrawal
+	for rows.Next() {
+		w := &CreditWithdrawal{}
+		var paymentHash, errorMsg sql.NullString
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&w.ID, &w.Pubkey, &w.AmountSats, &w.LightningAddress, &w.Status,
+			&paymentHash, &errorMsg, &w.CreatedAt, &completedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan withdrawal: %w", err)
+		}
+		if paymentHash.Valid {
+			w.PaymentHash = &paymentHash.String
+		}
+		if errorMsg.Valid {
+			w.ErrorMessage = &errorMsg.String
+		}
+		if completedAt.Valid {
+			w.CompletedAt = &completedAt.Time
+		}
+		withdrawals = append(withdrawals, w)
+	}
+	return withdrawals, nil
+}
+
+// Error definitions
+var (
+	ErrInsufficientCredits = fmt.Errorf("insufficient credits")
+)

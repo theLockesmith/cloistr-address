@@ -68,10 +68,13 @@ func (h *Handler) Router() *gin.Engine {
 		authAPI.GET("/addresses/me", h.getMyAddress)
 		authAPI.PUT("/addresses/lightning", h.updateLightningConfig)
 
-		// Purchase flow
+		// Purchase flow (race-based: first payment wins)
 		authAPI.POST("/purchase/quote", h.getPurchaseQuote)
 		authAPI.POST("/purchase/invoice", h.createPurchaseInvoice)
-		authAPI.GET("/purchase/status/:id", h.getPurchaseStatus)
+
+		// Credits (withdrawable balance from race losses)
+		authAPI.GET("/credits", h.getCredits)
+		authAPI.POST("/credits/withdraw", h.withdrawCredits)
 
 		// Transfer
 		authAPI.POST("/addresses/transfer", h.transferAddress)
