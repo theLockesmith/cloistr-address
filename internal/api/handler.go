@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/auth"
+	"git.coldforge.xyz/coldforge/cloistr-address/internal/btcpay"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/config"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/metrics"
 	"git.coldforge.xyz/coldforge/cloistr-address/internal/storage"
@@ -16,15 +17,17 @@ import (
 
 // Handler handles HTTP API requests
 type Handler struct {
-	cfg   *config.Config
-	store *storage.Storage
+	cfg    *config.Config
+	store  *storage.Storage
+	btcpay *btcpay.Client
 }
 
 // NewHandler creates a new API handler
 func NewHandler(cfg *config.Config, store *storage.Storage) *Handler {
 	return &Handler{
-		cfg:   cfg,
-		store: store,
+		cfg:    cfg,
+		store:  store,
+		btcpay: btcpay.NewClient(cfg.BTCPay),
 	}
 }
 
@@ -57,6 +60,9 @@ func (h *Handler) Router() *gin.Engine {
 	{
 		// Address availability check (public)
 		api.GET("/addresses/check/:username", h.checkUsernameAvailability)
+
+		// BTCPay webhook (no auth - signature verified in handler)
+		api.POST("/webhook/btcpay", h.handleBTCPayWebhook)
 	}
 
 	// Authenticated API endpoints (require NIP-98)

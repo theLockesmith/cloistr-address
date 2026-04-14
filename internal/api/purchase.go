@@ -242,26 +242,70 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		}
 	}
 
-	// TODO: Create BTCPay invoice here
-	// For now, return a placeholder response
-	invoiceID := generateInvoiceID(username, pubkey)
-	expiresAt := time.Now().Add(1 * time.Hour) // 1 hour expiry
+	// Check if BTCPay is configured
+	if !h.btcpay.IsConfigured() {
+		slog.Error("BTCPay not configured")
+		// Refund any deducted credits
+		if creditsApplied > 0 {
+			h.store.AddCredits(ctx, pubkey, creditsApplied, "btcpay_unavailable_refund", username)
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Payment system unavailable"})
+		return
+	}
 
-	slog.Info("created purchase invoice",
+	// Create BTCPay invoice with metadata for webhook processing
+	metadata := map[string]interface{}{
+		"username":        username,
+		"pubkey":          pubkey,
+		"credits_applied": creditsApplied,
+		"original_price":  price,
+	}
+
+	invoice, err := h.btcpay.CreateInvoice(finalPrice, metadata)
+	if err != nil {
+		slog.Error("failed to create BTCPay invoice",
+			"username", username,
+			"pubkey", pubkey,
+			"amount", finalPrice,
+			"error", err,
+		)
+		// Refund any deducted credits
+		if creditsApplied > 0 {
+			h.store.AddCredits(ctx, pubkey, creditsApplied, "invoice_creation_failed_refund", username)
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invoice"})
+		return
+	}
+
+	// Get payment methods to retrieve BOLT11 invoice
+	var paymentRequest string
+	methods, err := h.btcpay.GetInvoicePaymentMethods(invoice.ID)
+	if err != nil {
+		slog.Warn("failed to get payment methods", "invoice_id", invoice.ID, "error", err)
+	} else {
+		for _, m := range methods {
+			if m.PaymentMethod == "BTC-LightningNetwork" {
+				paymentRequest = m.Destination
+				break
+			}
+		}
+	}
+
+	slog.Info("created BTCPay invoice",
 		"username", username,
 		"pubkey", pubkey,
 		"amount_sats", finalPrice,
 		"credits_applied", creditsApplied,
-		"invoice_id", invoiceID,
+		"invoice_id", invoice.ID,
 	)
 
 	response := PurchaseInvoiceResponse{
-		InvoiceID:      invoiceID,
+		InvoiceID:      invoice.ID,
 		Username:       username,
 		AmountSats:     finalPrice,
 		CreditsApplied: creditsApplied,
-		ExpiresAt:      expiresAt.Format(time.RFC3339),
-		// PaymentRequest will be filled when BTCPay is integrated
+		PaymentRequest: paymentRequest,
+		ExpiresAt:      time.Unix(invoice.ExpirationTime, 0).Format(time.RFC3339),
 	}
 
 	c.JSON(http.StatusCreated, response)
@@ -348,16 +392,4 @@ func (h *Handler) withdrawCredits(c *gin.Context) {
 	})
 }
 
-// generateInvoiceID creates a unique invoice ID
-// Format: cloistr_<timestamp>_<username_prefix>
-func generateInvoiceID(username, pubkey string) string {
-	return "cloistr_" + time.Now().Format("20060102150405") + "_" + username[:min(8, len(username))]
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 

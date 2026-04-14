@@ -14,6 +14,15 @@ type Config struct {
 	Domain   string
 	Relays   []string
 	LND      LNDConfig
+	BTCPay   BTCPayConfig
+}
+
+// BTCPayConfig holds BTCPay Server configuration
+type BTCPayConfig struct {
+	URL           string
+	APIKey        string
+	StoreID       string
+	WebhookSecret string // For verifying webhook signatures
 }
 
 // ServerConfig holds HTTP server configuration
@@ -58,6 +67,12 @@ func Load() (*Config, error) {
 			Host:         getEnv("LND_REST_HOST", ""),
 			MacaroonPath: getEnv("LND_MACAROON_PATH", ""),
 			TLSCertPath:  getEnv("LND_TLS_CERT_PATH", ""),
+		},
+		BTCPay: BTCPayConfig{
+			URL:           getEnv("BTCPAY_URL", ""),
+			APIKey:        getEnv("BTCPAY_API_KEY", ""),
+			StoreID:       getEnv("BTCPAY_STORE_ID", ""),
+			WebhookSecret: getEnv("BTCPAY_WEBHOOK_SECRET", ""),
 		},
 	}
 
