@@ -62,7 +62,7 @@ func (h *Handler) Router() *gin.Engine {
 		api.GET("/addresses/check/:username", h.checkUsernameAvailability)
 
 		// BTCPay webhook (no auth - signature verified in handler)
-		api.POST("/webhook/btcpay", h.handleBTCPayWebhook)
+		api.POST("/webhook/payment", h.handleBTCPayWebhook)
 	}
 
 	// Authenticated API endpoints (require NIP-98)
