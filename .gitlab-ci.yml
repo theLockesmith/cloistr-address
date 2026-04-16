@@ -4,7 +4,7 @@ stages:
 
 variables:
   DOCKER_TLS_CERTDIR: "/certs"
-  IMAGE_NAME: registry.aegis-hq.xyz/coldforge/cloistr-address
+  IMAGE_NAME: registry.coldforge.xyz/cloistr-address
 
 build:
   stage: build
