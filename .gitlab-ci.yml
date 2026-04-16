@@ -1,10 +1,6 @@
 stages:
   - build
 
-variables:
-  # GitLab is on aegis-hq.xyz, registry is registry.aegis-hq.xyz
-  IMAGE_NAME: registry.aegis-hq.xyz/coldforge/cloistr-address
-
 build:
   stage: build
   image:
@@ -14,25 +10,7 @@ build:
     - mkdir -p /kaniko/.docker
     - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
   script:
-    - /kaniko/executor
-      --context ${CI_PROJECT_DIR}
-      --dockerfile ${CI_PROJECT_DIR}/Dockerfile
-      --destination ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
-      --destination ${IMAGE_NAME}:latest
+    - /kaniko/executor --context ${CI_PROJECT_DIR} --dockerfile ${CI_PROJECT_DIR}/Dockerfile --destination ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} --destination ${CI_REGISTRY_IMAGE}:latest
   only:
     - main
     - master
-
-# Build for merge requests (no push)
-build-mr:
-  stage: build
-  image:
-    name: gcr.io/kaniko-project/executor:debug
-    entrypoint: [""]
-  script:
-    - /kaniko/executor
-      --context ${CI_PROJECT_DIR}
-      --dockerfile ${CI_PROJECT_DIR}/Dockerfile
-      --no-push
-  only:
-    - merge_requests
