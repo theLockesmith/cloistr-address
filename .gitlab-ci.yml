@@ -1,23 +1,20 @@
 stages:
   - build
-  - push
-
-variables:
-  DOCKER_TLS_CERTDIR: "/certs"
-  IMAGE_NAME: registry.coldforge.xyz/cloistr-address
 
 build:
   stage: build
-  image: docker:24-dind
-  services:
-    - docker:24-dind
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
   script:
-    - docker build -t $IMAGE_NAME:$CI_COMMIT_SHA .
-    - docker tag $IMAGE_NAME:$CI_COMMIT_SHA $IMAGE_NAME:latest
-    - docker push $IMAGE_NAME:$CI_COMMIT_SHA
-    - docker push $IMAGE_NAME:latest
+    - /kaniko/executor
+      --context ${CI_PROJECT_DIR}
+      --dockerfile ${CI_PROJECT_DIR}/Dockerfile
+      --destination ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
+      --destination ${CI_REGISTRY_IMAGE}:latest
   only:
     - main
     - master
@@ -25,10 +22,13 @@ build:
 # Build for merge requests (no push)
 build-mr:
   stage: build
-  image: docker:24-dind
-  services:
-    - docker:24-dind
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   script:
-    - docker build -t $IMAGE_NAME:mr-$CI_MERGE_REQUEST_IID .
+    - /kaniko/executor
+      --context ${CI_PROJECT_DIR}
+      --dockerfile ${CI_PROJECT_DIR}/Dockerfile
+      --no-push
   only:
     - merge_requests
