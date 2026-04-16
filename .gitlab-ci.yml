@@ -1,6 +1,10 @@
 stages:
   - build
 
+variables:
+  # GitLab is on aegis-hq.xyz, registry is registry.aegis-hq.xyz
+  IMAGE_NAME: registry.aegis-hq.xyz/coldforge/cloistr-address
+
 build:
   stage: build
   image:
@@ -13,8 +17,8 @@ build:
     - /kaniko/executor
       --context ${CI_PROJECT_DIR}
       --dockerfile ${CI_PROJECT_DIR}/Dockerfile
-      --destination ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}
-      --destination ${CI_REGISTRY_IMAGE}:latest
+      --destination ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+      --destination ${IMAGE_NAME}:latest
   only:
     - main
     - master
