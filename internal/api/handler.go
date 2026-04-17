@@ -152,7 +152,7 @@ func (h *Handler) corsMiddleware() gin.HandlerFunc {
 func (h *Handler) healthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
-		"service": "cloistr-address",
+		"service": "cloistr-me",
 		"domain":  h.cfg.Domain,
 	})
 }

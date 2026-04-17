@@ -22,7 +22,7 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	slog.Info("starting cloistr-address")
+	slog.Info("starting cloistr-me")
 
 	// Load configuration
 	cfg, err := config.Load()

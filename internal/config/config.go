@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Config holds all configuration for cloistr-address
+// Config holds all configuration for cloistr-me
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
