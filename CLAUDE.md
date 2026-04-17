@@ -1,19 +1,20 @@
-# CLAUDE.md - cloistr-address
+# CLAUDE.md - cloistr-me
 
-**Unified address management for the @cloistr.xyz namespace**
+**Nostr identity service for the @cloistr.xyz namespace**
 
 ## Service Information
 
 - **Company:** Coldforge (Cloistr product line)
 - **Type:** Backend Service (Go)
-- **Purpose:** NIP-05 verification, Lightning Address, address namespace management
-- **Status:** Development
+- **Purpose:** NIP-05 verification, Lightning Address, identity management
+- **Status:** Production
+- **Primary Domain:** https://me.cloistr.xyz
 
 **Parent Context:** See [cloistr CLAUDE.md](../../arbiter/cloistr/CLAUDE.md)
 
 ## What This Service Does
 
-`cloistr-address` is the authoritative service for the `@cloistr.xyz` namespace. When a user purchases an address like `alice@cloistr.xyz`, they get:
+`cloistr-me` is the identity service for the Cloistr platform. When a user purchases an address like `alice@cloistr.xyz`, they get:
 
 1. **NIP-05 Verification** - Nostr identity verification via `/.well-known/nostr.json`
 2. **Lightning Address** - Receive payments via `/.well-known/lnurlp/*`
@@ -22,18 +23,19 @@
 ## Architecture
 
 ```
-cloistr-address
+cloistr-me
 ├── NIP-05 Handler      → /.well-known/nostr.json
 ├── Lightning Proxy     → /.well-known/lnurlp/*
 ├── Management API      → /api/v1/addresses/*
 ├── Purchase API        → /api/v1/purchase/*
+├── BTCPay Webhook      → /api/v1/payment/webhook
 └── Shared Database     → PostgreSQL (cloistr)
 ```
 
 ## Project Structure
 
 ```
-cloistr-address/
+cloistr-me/
 ├── cmd/address/main.go      # Entry point
 ├── internal/
 │   ├── api/                 # HTTP handlers
@@ -41,10 +43,12 @@ cloistr-address/
 │   │   ├── nip05.go         # NIP-05 endpoint
 │   │   ├── lnurlp.go        # Lightning Address
 │   │   ├── management.go    # Address CRUD
-│   │   └── purchase.go      # Payment flow
+│   │   ├── purchase.go      # Payment flow
+│   │   └── webhook.go       # BTCPay webhook
+│   ├── auth/                # NIP-98 authentication
+│   ├── btcpay/              # BTCPay Server client
 │   ├── config/              # Configuration
 │   ├── storage/             # PostgreSQL
-│   ├── lightning/           # LND/proxy (future)
 │   └── metrics/             # Prometheus
 ├── db/migrations/           # SQL migrations
 ├── Dockerfile
@@ -64,16 +68,20 @@ cloistr-address/
 | `DB_SSLMODE` | `require` | PostgreSQL SSL mode |
 | `DOMAIN` | `cloistr.xyz` | Address domain |
 | `DEFAULT_RELAYS` | `wss://relay.cloistr.xyz` | Default relay URLs |
-| `LND_REST_HOST` | (optional) | LND REST API host |
+| `BTCPAY_URL` | (required) | BTCPay Server URL |
+| `BTCPAY_API_KEY` | (required) | BTCPay API key |
+| `BTCPAY_STORE_ID` | (required) | BTCPay store ID |
+| `BTCPAY_WEBHOOK_SECRET` | (required) | BTCPay webhook secret |
 
 ## Database Tables
 
 Uses unified platform schema (`cloistr` database):
 - `addresses` - Username ↔ pubkey mapping
 - `address_relays` - Per-user relay hints
-- `address_lightning` - Lightning configuration (NEW)
+- `address_lightning` - Lightning configuration
 - `username_tiers` - Pricing by length
 - `payments` - Payment tracking
+- `pubkey_credits` - Withdrawable credits per pubkey
 
 ## API Endpoints
 
@@ -96,6 +104,13 @@ Uses unified platform schema (`cloistr` database):
 | `PUT /api/v1/addresses/lightning` | Update Lightning config |
 | `POST /api/v1/purchase/quote` | Get purchase quote |
 | `POST /api/v1/purchase/invoice` | Create payment invoice |
+| `POST /api/v1/purchase/claim` | Claim username with race winner |
+
+### Internal (BTCPay)
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/v1/payment/webhook` | BTCPay payment webhook |
 
 ## Lightning Address Modes
 
@@ -112,7 +127,7 @@ export DB_HOST="postgres-rw.db.coldforge.xyz"
 go run ./cmd/address
 
 # Build
-go build -o cloistr-address ./cmd/address
+go build -o cloistr-me ./cmd/address
 
 # Test NIP-05
 curl "http://localhost:8080/.well-known/nostr.json?name=alice"
@@ -123,24 +138,26 @@ curl "http://localhost:8080/.well-known/lnurlp/alice"
 
 ## Deployment
 
-- **Registry:** `registry.aegis-hq.xyz/coldforge/cloistr-address`
+- **Registry:** `registry.aegis-hq.xyz/coldforge/cloistr-me`
 - **Namespace:** `cloistr`
-- **Atlas Role:** `cloistr-address`
+- **Atlas Role:** `cloistr-me`
+- **Domain:** `me.cloistr.xyz` (also accessible via `cloistr.xyz`)
 
 ## Implementation Status
 
-### Phase 1: Core Service (Current)
+### Phase 1: Core Service ✓
 - [x] Project scaffolding
 - [x] NIP-05 endpoint
 - [x] Lightning Address proxy
 - [x] Availability check API
-- [ ] Atlas deployment role
-- [ ] Production deployment
+- [x] Atlas deployment role
+- [x] Production deployment
 
-### Phase 2: Payments
-- [ ] LND REST integration
-- [ ] Purchase flow
-- [ ] NIP-98 authentication
+### Phase 2: Payments ✓
+- [x] BTCPay Server integration
+- [x] Purchase flow with race-based claiming
+- [x] NIP-98 authentication
+- [x] Withdrawable credits system
 
 ### Phase 3: Integration
 - [ ] cloistr-email integration
@@ -153,4 +170,4 @@ curl "http://localhost:8080/.well-known/lnurlp/alice"
 
 ---
 
-**Last Updated:** 2026-04-07
+**Last Updated:** 2026-04-17

@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/api"
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/config"
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/metrics"
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/storage"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/api"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/config"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/metrics"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 func main() {

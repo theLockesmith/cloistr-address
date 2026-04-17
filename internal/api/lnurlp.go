@@ -11,7 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/metrics"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/metrics"
 )
 
 // LNURLPConfigResponse represents the LNURL-pay initial response

@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/config"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/config"
 )
 
 // Storage handles database operations

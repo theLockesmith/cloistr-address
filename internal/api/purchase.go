@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/auth"
-	"git.coldforge.xyz/coldforge/cloistr-address/internal/storage"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/auth"
+	"git.coldforge.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // PurchaseQuoteRequest represents a quote request
