@@ -25,6 +25,7 @@ type Address struct {
 	Pubkey          string
 	Active          bool
 	Verified        bool
+	DisplayName     *string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	ExpiresAt       *time.Time
@@ -112,13 +113,13 @@ func (s *Storage) Close() error {
 func (s *Storage) GetAddressByUsername(ctx context.Context, username, domain string) (*Address, error) {
 	addr := &Address{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified,
+		SELECT id, username, domain, pubkey, active, verified, display_name,
 		       created_at, updated_at, expires_at, grace_period_ends, ban_reason
 		FROM addresses
 		WHERE username = $1 AND domain = $2 AND active = true
 	`, username, domain).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
 		&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
 	)
 	if err == sql.ErrNoRows {
@@ -134,13 +135,13 @@ func (s *Storage) GetAddressByUsername(ctx context.Context, username, domain str
 func (s *Storage) GetAddressByPubkey(ctx context.Context, pubkey string) (*Address, error) {
 	addr := &Address{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified,
+		SELECT id, username, domain, pubkey, active, verified, display_name,
 		       created_at, updated_at, expires_at, grace_period_ends, ban_reason
 		FROM addresses
 		WHERE pubkey = $1 AND active = true
 	`, pubkey).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
 		&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
 	)
 	if err == sql.ErrNoRows {
