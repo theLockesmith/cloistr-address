@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+FROM registry.aegis-hq.xyz/coldforge/cloistr-me/golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -18,7 +18,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o cloistr-address ./cmd/address
 
 # Runtime stage
-FROM alpine:latest
+FROM registry.aegis-hq.xyz/coldforge/cloistr-me/alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata postgresql16-client
 
