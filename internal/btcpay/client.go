@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/config"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/config"
 )
 
 // Client handles BTCPay Server API interactions

@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/metrics"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/metrics"
 )
 
 // NIP05Response represents the nostr.json response format

@@ -8,11 +8,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/auth"
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/btcpay"
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/config"
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/metrics"
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/storage"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/config"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/metrics"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // Handler handles HTTP API requests

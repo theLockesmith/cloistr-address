@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/btcpay"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
 )
 
 // handleBTCPayWebhook processes BTCPay webhook notifications

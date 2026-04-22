@@ -1,4 +1,4 @@
-module git.coldforge.xyz/coldforge/cloistr-me
+module git.aegis-hq.xyz/coldforge/cloistr-me
 
 go 1.25.0
 

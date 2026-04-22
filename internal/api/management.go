@@ -9,7 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"git.coldforge.xyz/coldforge/cloistr-me/internal/auth"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
 )
 
 // timeNow is a variable for testing
