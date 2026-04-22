@@ -1,6 +1,5 @@
 # Build stage
-# Using Harbor pullthrough proxy to avoid Docker Hub rate limits
-FROM oci.coldforge.xyz/dockerhub/library/golang:1.25-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -19,7 +18,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o cloistr-address ./cmd/address
 
 # Runtime stage
-FROM oci.coldforge.xyz/dockerhub/library/alpine:latest
+FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata postgresql16-client
 
