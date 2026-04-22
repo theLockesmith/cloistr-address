@@ -9,12 +9,18 @@ import (
 
 // Config holds all configuration for cloistr-me
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Domain   string
-	Relays   []string
-	LND      LNDConfig
-	BTCPay   BTCPayConfig
+	Server        ServerConfig
+	Database      DatabaseConfig
+	Domain        string
+	Relays        []string
+	LND           LNDConfig
+	BTCPay        BTCPayConfig
+	InternalAPI   InternalAPIConfig
+}
+
+// InternalAPIConfig holds internal API configuration
+type InternalAPIConfig struct {
+	Secret string // Shared secret for internal service-to-service calls
 }
 
 // BTCPayConfig holds BTCPay Server configuration
@@ -73,6 +79,9 @@ func Load() (*Config, error) {
 			APIKey:        getEnv("BTCPAY_API_KEY", ""),
 			StoreID:       getEnv("BTCPAY_STORE_ID", ""),
 			WebhookSecret: getEnv("BTCPAY_WEBHOOK_SECRET", ""),
+		},
+		InternalAPI: InternalAPIConfig{
+			Secret: getEnv("INTERNAL_API_SECRET", ""),
 		},
 	}
 

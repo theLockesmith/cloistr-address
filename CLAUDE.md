@@ -44,7 +44,8 @@ cloistr-me/
 │   │   ├── lnurlp.go        # Lightning Address
 │   │   ├── management.go    # Address CRUD
 │   │   ├── purchase.go      # Payment flow
-│   │   └── webhook.go       # BTCPay webhook
+│   │   ├── webhook.go       # BTCPay webhook
+│   │   └── internal.go      # Internal service-to-service API
 │   ├── auth/                # NIP-98 authentication
 │   ├── btcpay/              # BTCPay Server client
 │   ├── config/              # Configuration
@@ -72,6 +73,7 @@ cloistr-me/
 | `BTCPAY_API_KEY` | (required) | BTCPay API key |
 | `BTCPAY_STORE_ID` | (required) | BTCPay store ID |
 | `BTCPAY_WEBHOOK_SECRET` | (required) | BTCPay webhook secret |
+| `INTERNAL_API_SECRET` | (optional) | Shared secret for internal service calls |
 
 ## Database Tables
 
@@ -102,15 +104,18 @@ Uses unified platform schema (`cloistr` database):
 |----------|-------------|
 | `GET /api/v1/addresses/me` | Get my address |
 | `PUT /api/v1/addresses/lightning` | Update Lightning config |
+| `POST /api/v1/addresses/transfer` | Transfer address to another pubkey |
 | `POST /api/v1/purchase/quote` | Get purchase quote |
 | `POST /api/v1/purchase/invoice` | Create payment invoice |
-| `POST /api/v1/purchase/claim` | Claim username with race winner |
+| `GET /api/v1/credits` | Get credit balance |
+| `POST /api/v1/credits/withdraw` | Withdraw credits to Lightning address |
 
-### Internal (BTCPay)
+### Internal (Service-to-Service)
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/v1/payment/webhook` | BTCPay payment webhook |
+| `POST /api/v1/webhook/payment` | BTCPay payment webhook |
+| `POST /internal/v1/credits/grant` | Grant credits (relay bundle, promo, etc.) |
 
 ## Lightning Address Modes
 
@@ -161,8 +166,8 @@ curl "http://localhost:8080/.well-known/lnurlp/alice"
 
 ### Phase 3: Integration
 - [ ] cloistr-email integration
-- [ ] Relay bundle credits
-- [ ] Address transfers
+- [x] Relay bundle credits (internal API: POST /internal/v1/credits/grant)
+- [x] Address transfers (POST /api/v1/addresses/transfer with 7-day cooldown)
 
 ### Phase 4: NWC
 - [ ] Nostr Wallet Connect
@@ -170,4 +175,4 @@ curl "http://localhost:8080/.well-known/lnurlp/alice"
 
 ---
 
-**Last Updated:** 2026-04-17
+**Last Updated:** 2026-04-21

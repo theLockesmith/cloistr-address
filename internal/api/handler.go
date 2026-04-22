@@ -86,6 +86,14 @@ func (h *Handler) Router() *gin.Engine {
 		authAPI.POST("/addresses/transfer", h.transferAddress)
 	}
 
+	// Internal API endpoints (for service-to-service calls)
+	internalAPI := r.Group("/internal/v1")
+	internalAPI.Use(h.internalAuthMiddleware())
+	{
+		// Credit management (used by cloistr-relay for relay bundle credits)
+		internalAPI.POST("/credits/grant", h.grantCredits)
+	}
+
 	return r
 }
 
