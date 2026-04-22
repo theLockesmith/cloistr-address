@@ -3,6 +3,8 @@ stages:
 
 build:
   stage: build
+  tags:
+    - kubernetes
   image:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
