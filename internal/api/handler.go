@@ -11,24 +11,39 @@ import (
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/config"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/crypto"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/metrics"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // Handler handles HTTP API requests
 type Handler struct {
-	cfg    *config.Config
-	store  *storage.Storage
-	btcpay *btcpay.Client
+	cfg          *config.Config
+	store        *storage.Storage
+	btcpay       *btcpay.Client
+	nwcEncryptor *crypto.Encryptor
 }
 
 // NewHandler creates a new API handler
 func NewHandler(cfg *config.Config, store *storage.Storage) *Handler {
-	return &Handler{
+	h := &Handler{
 		cfg:    cfg,
 		store:  store,
 		btcpay: btcpay.NewClient(cfg.BTCPay),
 	}
+
+	// Initialize NWC encryptor if key is configured
+	if cfg.NWC.EncryptionKey != "" {
+		enc, err := crypto.NewEncryptor(cfg.NWC.EncryptionKey)
+		if err != nil {
+			slog.Warn("failed to initialize NWC encryptor, NWC mode will be unavailable",
+				"error", err)
+		} else {
+			h.nwcEncryptor = enc
+		}
+	}
+
+	return h
 }
 
 // Router creates and configures the Gin router
@@ -92,6 +107,9 @@ func (h *Handler) Router() *gin.Engine {
 	{
 		// Credit management (used by cloistr-relay for relay bundle credits)
 		internalAPI.POST("/credits/grant", h.grantCredits)
+
+		// Address verification (used by cloistr-email to verify ownership)
+		internalAPI.GET("/addresses/verify", h.verifyAddress)
 	}
 
 	return r

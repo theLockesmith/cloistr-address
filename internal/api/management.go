@@ -10,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/nwc"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // timeNow is a variable for testing
@@ -39,6 +41,8 @@ type AddressResponse struct {
 type LightningConfigResponse struct {
 	Mode           string  `json:"mode"`
 	ProxyAddress   string  `json:"proxy_address,omitempty"`
+	NWCConfigured  bool    `json:"nwc_configured,omitempty"`
+	NWCErrorCount  int     `json:"nwc_error_count,omitempty"`
 	MinSendableSat int64   `json:"min_sendable_sat"`
 	MaxSendableSat int64   `json:"max_sendable_sat"`
 	CommentAllowed int     `json:"comment_allowed"`
@@ -48,8 +52,9 @@ type LightningConfigResponse struct {
 
 // UpdateLightningConfigRequest represents a request to update Lightning config
 type UpdateLightningConfigRequest struct {
-	Mode         string  `json:"mode" binding:"required,oneof=proxy nwc disabled"`
-	ProxyAddress *string `json:"proxy_address,omitempty"`
+	Mode             string  `json:"mode" binding:"required,oneof=proxy nwc hosted disabled"`
+	ProxyAddress     *string `json:"proxy_address,omitempty"`
+	NWCConnectionURI *string `json:"nwc_connection_uri,omitempty"` // nostr+walletconnect://...
 }
 
 var usernameRegex = regexp.MustCompile(`^[a-z0-9_-]{2,50}$`)
@@ -151,6 +156,8 @@ func (h *Handler) getMyAddress(c *gin.Context) {
 		response.Lightning = &LightningConfigResponse{
 			Mode:           lightning.Mode,
 			ProxyAddress:   lightning.ProxyAddress,
+			NWCConfigured:  lightning.NWCSecretEncrypted != "",
+			NWCErrorCount:  lightning.NWCErrorCount,
 			MinSendableSat: lightning.MinSendableMsats / 1000,
 			MaxSendableSat: lightning.MaxSendableMsats / 1000,
 			CommentAllowed: lightning.CommentAllowed,
@@ -187,6 +194,26 @@ func (h *Handler) updateLightningConfig(c *gin.Context) {
 		}
 	}
 
+	// Validate NWC configuration if mode is nwc
+	var nwcConfig *nwc.ConnectionConfig
+	if req.Mode == "nwc" {
+		if req.NWCConnectionURI == nil || *req.NWCConnectionURI == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "nwc_connection_uri required when mode is 'nwc'"})
+			return
+		}
+		if h.nwcEncryptor == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "NWC mode is not available on this server"})
+			return
+		}
+		// Parse the NWC connection URI
+		var err error
+		nwcConfig, err = nwc.ParseConnectionURI(*req.NWCConnectionURI)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid NWC connection URI: " + err.Error()})
+			return
+		}
+	}
+
 	// Get user's address
 	address, err := h.store.GetAddressByPubkey(ctx, pubkey)
 	if err != nil {
@@ -200,13 +227,30 @@ func (h *Handler) updateLightningConfig(c *gin.Context) {
 		return
 	}
 
-	// Update lightning config
-	proxyAddr := ""
-	if req.ProxyAddress != nil {
-		proxyAddr = *req.ProxyAddress
+	// Build the update
+	update := storage.LightningConfigUpdate{
+		Mode: req.Mode,
 	}
 
-	err = h.store.UpsertLightningConfig(ctx, address.ID, req.Mode, proxyAddr)
+	if req.ProxyAddress != nil {
+		update.ProxyAddress = *req.ProxyAddress
+	}
+
+	if nwcConfig != nil {
+		update.NWCRelayURL = nwcConfig.RelayURL
+		update.NWCWalletPubkey = nwcConfig.WalletPubkey
+
+		// Encrypt the secret before storing
+		encryptedSecret, err := h.nwcEncryptor.Encrypt(nwcConfig.Secret)
+		if err != nil {
+			slog.Error("failed to encrypt NWC secret", "address_id", address.ID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to secure NWC configuration"})
+			return
+		}
+		update.NWCSecretEncrypted = encryptedSecret
+	}
+
+	err = h.store.UpsertLightningConfigFull(ctx, address.ID, update)
 	if err != nil {
 		slog.Error("failed to update lightning config", "address_id", address.ID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update configuration"})
@@ -224,6 +268,8 @@ func (h *Handler) updateLightningConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, LightningConfigResponse{
 		Mode:           lightning.Mode,
 		ProxyAddress:   lightning.ProxyAddress,
+		NWCConfigured:  lightning.NWCSecretEncrypted != "",
+		NWCErrorCount:  lightning.NWCErrorCount,
 		MinSendableSat: lightning.MinSendableMsats / 1000,
 		MaxSendableSat: lightning.MaxSendableMsats / 1000,
 		CommentAllowed: lightning.CommentAllowed,

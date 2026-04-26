@@ -44,17 +44,23 @@ type AddressRelay struct {
 
 // AddressLightning represents Lightning Address configuration
 type AddressLightning struct {
-	AddressID        int64
-	Mode             string // "proxy", "nwc", "disabled"
-	ProxyAddress     string
-	NWCConnection    string
-	MinSendableMsats int64
-	MaxSendableMsats int64
-	CommentAllowed   int
-	AllowsNostr      bool
-	Enabled          bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	AddressID          int64
+	Mode               string // "proxy", "nwc", "hosted", "disabled"
+	ProxyAddress       string
+	NWCConnection      string // Deprecated: use NWCSecretEncrypted
+	NWCRelayURL        string
+	NWCWalletPubkey    string
+	NWCSecretEncrypted string
+	NWCLastSuccessAt   *time.Time
+	NWCLastError       *string
+	NWCErrorCount      int
+	MinSendableMsats   int64
+	MaxSendableMsats   int64
+	CommentAllowed     int
+	AllowsNostr        bool
+	Enabled            bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // UsernameTier represents pricing tier for usernames
@@ -179,15 +185,21 @@ func (s *Storage) GetRelaysForAddress(ctx context.Context, addressID int64) ([]s
 // GetLightningConfig retrieves Lightning Address configuration for an address
 func (s *Storage) GetLightningConfig(ctx context.Context, addressID int64) (*AddressLightning, error) {
 	ln := &AddressLightning{}
-	var proxyAddr, nwcConn sql.NullString
+	var proxyAddr, nwcConn, nwcRelayURL, nwcWalletPubkey, nwcSecretEnc, nwcLastError sql.NullString
+	var nwcLastSuccess sql.NullTime
+	var nwcErrorCount sql.NullInt32
 	err := s.db.QueryRowContext(ctx, `
 		SELECT address_id, mode, proxy_address, nwc_connection,
+		       COALESCE(nwc_relay_url, ''), COALESCE(nwc_wallet_pubkey, ''), COALESCE(nwc_secret_encrypted, ''),
+		       nwc_last_success_at, nwc_last_error, COALESCE(nwc_error_count, 0),
 		       min_sendable_msats, max_sendable_msats, comment_allowed,
 		       allows_nostr, enabled, created_at, updated_at
 		FROM address_lightning
 		WHERE address_id = $1
 	`, addressID).Scan(
 		&ln.AddressID, &ln.Mode, &proxyAddr, &nwcConn,
+		&nwcRelayURL, &nwcWalletPubkey, &nwcSecretEnc,
+		&nwcLastSuccess, &nwcLastError, &nwcErrorCount,
 		&ln.MinSendableMsats, &ln.MaxSendableMsats, &ln.CommentAllowed,
 		&ln.AllowsNostr, &ln.Enabled, &ln.CreatedAt, &ln.UpdatedAt,
 	)
@@ -199,7 +211,48 @@ func (s *Storage) GetLightningConfig(ctx context.Context, addressID int64) (*Add
 	}
 	ln.ProxyAddress = proxyAddr.String
 	ln.NWCConnection = nwcConn.String
+	ln.NWCRelayURL = nwcRelayURL.String
+	ln.NWCWalletPubkey = nwcWalletPubkey.String
+	ln.NWCSecretEncrypted = nwcSecretEnc.String
+	if nwcLastSuccess.Valid {
+		ln.NWCLastSuccessAt = &nwcLastSuccess.Time
+	}
+	if nwcLastError.Valid {
+		ln.NWCLastError = &nwcLastError.String
+	}
+	ln.NWCErrorCount = int(nwcErrorCount.Int32)
 	return ln, nil
+}
+
+// UpdateNWCSuccess updates the NWC success timestamp and resets error count
+func (s *Storage) UpdateNWCSuccess(ctx context.Context, addressID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE address_lightning
+		SET nwc_last_success_at = NOW(),
+		    nwc_error_count = 0,
+		    nwc_last_error = NULL,
+		    updated_at = NOW()
+		WHERE address_id = $1
+	`, addressID)
+	if err != nil {
+		slog.Warn("failed to update NWC success", "address_id", addressID, "error", err)
+	}
+	return err
+}
+
+// UpdateNWCError updates the NWC error tracking
+func (s *Storage) UpdateNWCError(ctx context.Context, addressID int64, errorMsg string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE address_lightning
+		SET nwc_last_error = $2,
+		    nwc_error_count = COALESCE(nwc_error_count, 0) + 1,
+		    updated_at = NOW()
+		WHERE address_id = $1
+	`, addressID, errorMsg)
+	if err != nil {
+		slog.Warn("failed to update NWC error", "address_id", addressID, "error", err)
+	}
+	return err
 }
 
 // IsUsernameAvailable checks if a username is available for registration
@@ -287,16 +340,42 @@ func (s *Storage) GetAddressRelays(ctx context.Context, addressID int64) ([]stri
 }
 
 // UpsertLightningConfig creates or updates Lightning Address configuration
+// LightningConfigUpdate holds parameters for updating lightning config
+type LightningConfigUpdate struct {
+	Mode               string
+	ProxyAddress       string
+	NWCRelayURL        string
+	NWCWalletPubkey    string
+	NWCSecretEncrypted string
+}
+
 func (s *Storage) UpsertLightningConfig(ctx context.Context, addressID int64, mode, proxyAddress string) error {
+	return s.UpsertLightningConfigFull(ctx, addressID, LightningConfigUpdate{
+		Mode:         mode,
+		ProxyAddress: proxyAddress,
+	})
+}
+
+// UpsertLightningConfigFull upserts lightning config with all fields including NWC
+func (s *Storage) UpsertLightningConfigFull(ctx context.Context, addressID int64, update LightningConfigUpdate) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO address_lightning (address_id, mode, proxy_address, enabled, updated_at)
-		VALUES ($1, $2, NULLIF($3, ''), true, NOW())
+		INSERT INTO address_lightning (
+			address_id, mode, proxy_address,
+			nwc_relay_url, nwc_wallet_pubkey, nwc_secret_encrypted,
+			nwc_error_count, enabled, updated_at
+		)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), 0, true, NOW())
 		ON CONFLICT (address_id) DO UPDATE SET
 			mode = EXCLUDED.mode,
-			proxy_address = EXCLUDED.proxy_address,
+			proxy_address = CASE WHEN EXCLUDED.mode = 'proxy' THEN EXCLUDED.proxy_address ELSE NULL END,
+			nwc_relay_url = CASE WHEN EXCLUDED.mode = 'nwc' THEN EXCLUDED.nwc_relay_url ELSE address_lightning.nwc_relay_url END,
+			nwc_wallet_pubkey = CASE WHEN EXCLUDED.mode = 'nwc' THEN EXCLUDED.nwc_wallet_pubkey ELSE address_lightning.nwc_wallet_pubkey END,
+			nwc_secret_encrypted = CASE WHEN EXCLUDED.mode = 'nwc' THEN EXCLUDED.nwc_secret_encrypted ELSE address_lightning.nwc_secret_encrypted END,
+			nwc_error_count = CASE WHEN EXCLUDED.mode = 'nwc' THEN 0 ELSE address_lightning.nwc_error_count END,
+			nwc_last_error = CASE WHEN EXCLUDED.mode = 'nwc' THEN NULL ELSE address_lightning.nwc_last_error END,
 			enabled = CASE WHEN EXCLUDED.mode = 'disabled' THEN false ELSE true END,
 			updated_at = NOW()
-	`, addressID, mode, proxyAddress)
+	`, addressID, update.Mode, update.ProxyAddress, update.NWCRelayURL, update.NWCWalletPubkey, update.NWCSecretEncrypted)
 	if err != nil {
 		return fmt.Errorf("failed to upsert lightning config: %w", err)
 	}

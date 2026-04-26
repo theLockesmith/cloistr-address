@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/metrics"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/nwc"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // LNURLPConfigResponse represents the LNURL-pay initial response
@@ -198,12 +201,9 @@ func (h *Handler) handleLNURLPCallback(c *gin.Context) {
 	case "proxy":
 		h.handleProxyInvoice(c, lnConfig.ProxyAddress, amount, comment)
 	case "nwc":
-		// TODO: Implement NWC invoice generation
-		metrics.LNURLRequests.WithLabelValues("callback", "not_implemented").Inc()
-		c.JSON(http.StatusOK, LNURLErrorResponse{
-			Status: "ERROR",
-			Reason: "NWC mode not yet implemented",
-		})
+		h.handleNWCInvoice(c, ctx, lnConfig, amount, comment, username)
+	case "hosted":
+		h.handleHostedInvoice(c)
 	default:
 		metrics.LNURLRequests.WithLabelValues("callback", "disabled").Inc()
 		c.JSON(http.StatusOK, LNURLErrorResponse{
@@ -343,4 +343,121 @@ func (h *Handler) handleProxyInvoice(c *gin.Context, proxyAddress string, amount
 	// Return the invoice
 	metrics.LNURLRequests.WithLabelValues("callback", "success").Inc()
 	c.JSON(http.StatusOK, invoiceData)
+}
+
+// handleNWCInvoice generates an invoice using Nostr Wallet Connect
+func (h *Handler) handleNWCInvoice(c *gin.Context, ctx context.Context, lnConfig *storage.AddressLightning, amount int64, comment string, username string) {
+	// Check if NWC encryption is configured
+	if h.nwcEncryptor == nil {
+		slog.Error("NWC encryptor not configured")
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "NWC not configured on server",
+		})
+		return
+	}
+
+	// Check if NWC connection details are available
+	if lnConfig.NWCSecretEncrypted == "" || lnConfig.NWCRelayURL == "" || lnConfig.NWCWalletPubkey == "" {
+		slog.Error("NWC connection details missing", "username", username)
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "NWC not configured for this user",
+		})
+		return
+	}
+
+	// Decrypt the NWC secret
+	nwcSecret, err := h.nwcEncryptor.Decrypt(lnConfig.NWCSecretEncrypted)
+	if err != nil {
+		slog.Error("failed to decrypt NWC secret", "username", username, "error", err)
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "Failed to process NWC configuration",
+		})
+		return
+	}
+
+	// Create NWC client
+	nwcConfig := nwc.ConnectionConfig{
+		WalletPubkey: lnConfig.NWCWalletPubkey,
+		RelayURL:     lnConfig.NWCRelayURL,
+		Secret:       nwcSecret,
+	}
+
+	client, err := nwc.NewClient(nwcConfig)
+	if err != nil {
+		slog.Error("failed to create NWC client", "username", username, "error", err)
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "Failed to connect to wallet",
+		})
+		return
+	}
+
+	// Connect to relay
+	if err := client.Connect(ctx); err != nil {
+		slog.Error("failed to connect to NWC relay", "username", username, "relay", lnConfig.NWCRelayURL, "error", err)
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "Failed to connect to wallet relay",
+		})
+		return
+	}
+	defer client.Close()
+
+	// Build description
+	description := fmt.Sprintf("Payment to %s@%s", username, h.cfg.Domain)
+	if comment != "" {
+		description = fmt.Sprintf("%s: %s", description, comment)
+	}
+
+	// Request invoice
+	invoiceResp, err := client.MakeInvoice(ctx, nwc.MakeInvoiceRequest{
+		Amount:      amount,
+		Description: description,
+		Expiry:      3600, // 1 hour expiry
+	})
+	if err != nil {
+		slog.Error("NWC make_invoice failed", "username", username, "error", err)
+		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
+
+		// Update error tracking in database
+		h.store.UpdateNWCError(ctx, lnConfig.AddressID, err.Error())
+
+		c.JSON(http.StatusOK, LNURLErrorResponse{
+			Status: "ERROR",
+			Reason: "Failed to generate invoice from wallet",
+		})
+		return
+	}
+
+	// Update success tracking
+	h.store.UpdateNWCSuccess(ctx, lnConfig.AddressID)
+
+	slog.Info("NWC invoice generated",
+		"username", username,
+		"amount_msat", amount,
+		"payment_hash", invoiceResp.PaymentHash[:8]+"...",
+	)
+
+	metrics.LNURLRequests.WithLabelValues("callback", "nwc_success").Inc()
+	c.JSON(http.StatusOK, LNURLPCallbackResponse{
+		PR:     invoiceResp.Invoice,
+		Routes: []interface{}{},
+	})
+}
+
+// handleHostedInvoice handles hosted Lightning mode (stub for future implementation)
+func (h *Handler) handleHostedInvoice(c *gin.Context) {
+	metrics.LNURLRequests.WithLabelValues("callback", "hosted_not_ready").Inc()
+	c.JSON(http.StatusOK, LNURLErrorResponse{
+		Status: "ERROR",
+		Reason: "Hosted Lightning wallets coming soon",
+	})
 }

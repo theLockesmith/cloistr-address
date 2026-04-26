@@ -16,6 +16,12 @@ type Config struct {
 	LND           LNDConfig
 	BTCPay        BTCPayConfig
 	InternalAPI   InternalAPIConfig
+	NWC           NWCConfig
+}
+
+// NWCConfig holds Nostr Wallet Connect configuration
+type NWCConfig struct {
+	EncryptionKey string // 32-byte hex key for encrypting NWC secrets at rest
 }
 
 // InternalAPIConfig holds internal API configuration
@@ -82,6 +88,9 @@ func Load() (*Config, error) {
 		},
 		InternalAPI: InternalAPIConfig{
 			Secret: getEnv("INTERNAL_API_SECRET", ""),
+		},
+		NWC: NWCConfig{
+			EncryptionKey: getEnv("NWC_ENCRYPTION_KEY", ""),
 		},
 	}
 

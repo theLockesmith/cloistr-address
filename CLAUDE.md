@@ -41,7 +41,7 @@ cloistr-me/
 │   ├── api/                 # HTTP handlers
 │   │   ├── handler.go       # Router setup
 │   │   ├── nip05.go         # NIP-05 endpoint
-│   │   ├── lnurlp.go        # Lightning Address
+│   │   ├── lnurlp.go        # Lightning Address (proxy, NWC, hosted modes)
 │   │   ├── management.go    # Address CRUD
 │   │   ├── purchase.go      # Payment flow
 │   │   ├── webhook.go       # BTCPay webhook
@@ -49,6 +49,8 @@ cloistr-me/
 │   ├── auth/                # NIP-98 authentication
 │   ├── btcpay/              # BTCPay Server client
 │   ├── config/              # Configuration
+│   ├── crypto/              # AES-256-GCM encryption for secrets at rest
+│   ├── nwc/                 # NIP-47 Nostr Wallet Connect client
 │   ├── storage/             # PostgreSQL
 │   └── metrics/             # Prometheus
 ├── db/migrations/           # SQL migrations
@@ -74,6 +76,7 @@ cloistr-me/
 | `BTCPAY_STORE_ID` | (required) | BTCPay store ID |
 | `BTCPAY_WEBHOOK_SECRET` | (required) | BTCPay webhook secret |
 | `INTERNAL_API_SECRET` | (optional) | Shared secret for internal service calls |
+| `NWC_ENCRYPTION_KEY` | (optional) | 32-byte hex key for encrypting NWC secrets at rest |
 
 ## Database Tables
 
@@ -116,12 +119,14 @@ Uses unified platform schema (`cloistr` database):
 |----------|-------------|
 | `POST /api/v1/webhook/payment` | BTCPay payment webhook |
 | `POST /internal/v1/credits/grant` | Grant credits (relay bundle, promo, etc.) |
+| `GET /internal/v1/addresses/verify` | Verify pubkey owns username (for cloistr-email) |
 
 ## Lightning Address Modes
 
-1. **Proxy** (implemented) - Forward to user's existing Lightning Address
-2. **NWC** (future) - Nostr Wallet Connect for direct invoice generation
-3. **Disabled** - Lightning Address not active
+1. **Proxy** - Forward to user's existing Lightning Address
+2. **NWC** - Nostr Wallet Connect (NIP-47) for direct invoice generation via user's wallet
+3. **Hosted** - Coldforge-operated Lightning wallet (coming soon)
+4. **Disabled** - Lightning Address not active
 
 ## Development
 
@@ -164,15 +169,16 @@ curl "http://localhost:8080/.well-known/lnurlp/alice"
 - [x] NIP-98 authentication
 - [x] Withdrawable credits system
 
-### Phase 3: Integration
-- [ ] cloistr-email integration
+### Phase 3: Integration ✓
+- [x] cloistr-email integration (internal API: GET /internal/v1/addresses/verify)
 - [x] Relay bundle credits (internal API: POST /internal/v1/credits/grant)
 - [x] Address transfers (POST /api/v1/addresses/transfer with 7-day cooldown)
 
-### Phase 4: NWC
-- [ ] Nostr Wallet Connect
-- [ ] Coldforge hosted Lightning
+### Phase 4: NWC ✓
+- [x] Nostr Wallet Connect (NIP-47 with NIP-44/NIP-04 encryption)
+- [x] NWC secrets encrypted at rest (AES-256-GCM)
+- [x] Coldforge hosted Lightning (stubbed - returns "coming soon")
 
 ---
 
-**Last Updated:** 2026-04-21
+**Last Updated:** 2026-04-25
