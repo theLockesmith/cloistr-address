@@ -112,6 +112,9 @@ func (h *Handler) Router() *gin.Engine {
 		internalAPI.GET("/addresses/verify", h.verifyAddress)
 	}
 
+	// Admin interface (NIP-98 signed + platform-admin authorized). See admin.go.
+	h.registerAdminRoutes(r)
+
 	return r
 }
 
