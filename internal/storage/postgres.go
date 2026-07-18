@@ -17,21 +17,24 @@ type Storage struct {
 	db *sql.DB
 }
 
-// Address represents a user's address record
+// Address represents a user's address record.
+// JSON tags use snake_case so the admin UI gets predictable field names.
 type Address struct {
-	ID              int64
-	Username        string
-	Domain          string
-	Pubkey          string
-	Active          bool
-	Verified        bool
-	DisplayName     *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	ExpiresAt       *time.Time
-	GracePeriodEnds *time.Time
-	BanReason       *string
-	LastTransferAt  *time.Time
+	ID              int64      `json:"id"`
+	Username        string     `json:"username"`
+	Domain          string     `json:"domain"`
+	Pubkey          string     `json:"pubkey"`
+	Active          bool       `json:"active"`
+	Verified        bool       `json:"verified"`
+	IsPrimary       bool       `json:"is_primary"`
+	NIP05Active     bool       `json:"nip05_active"`
+	DisplayName     *string    `json:"display_name,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	GracePeriodEnds *time.Time `json:"grace_period_ends,omitempty"`
+	BanReason       *string    `json:"ban_reason,omitempty"`
+	LastTransferAt  *time.Time `json:"last_transfer_at,omitempty"`
 }
 
 // AddressRelay represents a relay URL associated with an address
@@ -115,17 +118,19 @@ func (s *Storage) Close() error {
 	return s.db.Close()
 }
 
-// GetAddressByUsername retrieves an address by username and domain
+// GetAddressByUsername retrieves an active address by username and domain.
+// NIP-05 and LNURLP use this; each (username, domain) is unique among active rows.
 func (s *Storage) GetAddressByUsername(ctx context.Context, username, domain string) (*Address, error) {
 	addr := &Address{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified, display_name,
-		       created_at, updated_at, expires_at, grace_period_ends, ban_reason
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
+		       display_name, created_at, updated_at, expires_at, grace_period_ends, ban_reason
 		FROM addresses
 		WHERE username = $1 AND domain = $2 AND active = true
 	`, username, domain).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+		&addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
 		&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
 	)
 	if err == sql.ErrNoRows {
@@ -137,17 +142,22 @@ func (s *Storage) GetAddressByUsername(ctx context.Context, username, domain str
 	return addr, nil
 }
 
-// GetAddressByPubkey retrieves an address by pubkey
+// GetAddressByPubkey returns one active address for pubkey, preferring the
+// primary address. Kept for backwards compatibility; prefer GetPrimaryAddressByPubkey
+// where exact primary semantics matter.
 func (s *Storage) GetAddressByPubkey(ctx context.Context, pubkey string) (*Address, error) {
 	addr := &Address{}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified, display_name,
-		       created_at, updated_at, expires_at, grace_period_ends, ban_reason
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
+		       display_name, created_at, updated_at, expires_at, grace_period_ends, ban_reason
 		FROM addresses
 		WHERE pubkey = $1 AND active = true
+		ORDER BY is_primary DESC, id ASC
+		LIMIT 1
 	`, pubkey).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+		&addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
 		&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
 	)
 	if err == sql.ErrNoRows {
@@ -157,6 +167,60 @@ func (s *Storage) GetAddressByPubkey(ctx context.Context, pubkey string) (*Addre
 		return nil, fmt.Errorf("failed to get address: %w", err)
 	}
 	return addr, nil
+}
+
+// GetPrimaryAddressByPubkey retrieves the address that has is_primary=TRUE for pubkey.
+// Returns nil (not an error) when the pubkey has no active primary address.
+func (s *Storage) GetPrimaryAddressByPubkey(ctx context.Context, pubkey string) (*Address, error) {
+	addr := &Address{}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
+		       display_name, created_at, updated_at, expires_at, grace_period_ends, ban_reason
+		FROM addresses
+		WHERE pubkey = $1 AND active = true AND is_primary = true
+	`, pubkey).Scan(
+		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
+		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+		&addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get primary address: %w", err)
+	}
+	return addr, nil
+}
+
+// GetAddressesByPubkey returns all active addresses for a pubkey, primary first.
+func (s *Storage) GetAddressesByPubkey(ctx context.Context, pubkey string) ([]Address, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
+		       display_name, created_at, updated_at, expires_at, grace_period_ends, ban_reason
+		FROM addresses
+		WHERE pubkey = $1 AND active = true
+		ORDER BY is_primary DESC, created_at ASC
+	`, pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list addresses: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Address
+	for rows.Next() {
+		var a Address
+		if err := rows.Scan(
+			&a.ID, &a.Username, &a.Domain, &a.Pubkey,
+			&a.Active, &a.Verified, &a.IsPrimary, &a.NIP05Active,
+			&a.DisplayName, &a.CreatedAt, &a.UpdatedAt,
+			&a.ExpiresAt, &a.GracePeriodEnds, &a.BanReason,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // GetRelaysForAddress retrieves relay URLs for an address
@@ -305,10 +369,12 @@ func (s *Storage) GetUsernameTier(ctx context.Context, usernameLength int) (stri
 	return tierName, nil
 }
 
-// GetAllActiveAddresses retrieves all active addresses for NIP-05 bulk response
+// GetAllActiveAddresses retrieves all active addresses for NIP-05 bulk response.
+// Note: with N-addresses per pubkey this may return multiple rows with the same
+// pubkey (one per name). is_primary and nip05_active are included for completeness.
 func (s *Storage) GetAllActiveAddresses(ctx context.Context, domain string) ([]*Address, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified,
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
 		       created_at, updated_at, expires_at, grace_period_ends, ban_reason
 		FROM addresses
 		WHERE domain = $1 AND active = true
@@ -324,7 +390,8 @@ func (s *Storage) GetAllActiveAddresses(ctx context.Context, domain string) ([]*
 		addr := &Address{}
 		if err := rows.Scan(
 			&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-			&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+			&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+			&addr.CreatedAt, &addr.UpdatedAt,
 			&addr.ExpiresAt, &addr.GracePeriodEnds, &addr.BanReason,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan address: %w", err)
@@ -382,40 +449,137 @@ func (s *Storage) UpsertLightningConfigFull(ctx context.Context, addressID int64
 	return nil
 }
 
-// TransferAddress transfers ownership of an address to a new pubkey
+// TransferAddress transfers ownership of an address to a new pubkey.
+// It handles is_primary / nip05_active reassignment for both the source and target
+// pubkeys, and writes the ownership interval transition, all within a single tx.
 func (s *Storage) TransferAddress(ctx context.Context, addressID int64, newPubkey string) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Ensure the target user row exists (FK guard).
+	if err := ensureUser(ctx, tx, newPubkey); err != nil {
+		return err
+	}
+
+	// Fetch current state of the address being transferred.
+	var fromPubkey, username, domain string
+	var wasPrimary, wasNIP05Active bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT pubkey, username, domain, is_primary, nip05_active
+		FROM addresses WHERE id = $1
+	`, addressID).Scan(&fromPubkey, &username, &domain, &wasPrimary, &wasNIP05Active)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lookup address: %w", err)
+	}
+
+	// How many OTHER active addresses does the source pubkey still have after this transfer?
+	var fromOthers int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE AND id != $2
+	`, fromPubkey, addressID).Scan(&fromOthers); err != nil {
+		return fmt.Errorf("count from-pubkey addresses: %w", err)
+	}
+
+	// Is this the target pubkey's first active address?
+	var toCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, newPubkey).Scan(&toCount); err != nil {
+		return fmt.Errorf("count to-pubkey addresses: %w", err)
+	}
+	isFirstForTarget := toCount == 0
+
+	// Transfer the address row.
+	_, err = tx.ExecContext(ctx, `
 		UPDATE addresses
 		SET pubkey = $2,
+		    is_primary   = $3,
+		    nip05_active = $3,
 		    last_transfer_at = NOW(),
-		    updated_at = NOW()
+		    updated_at   = NOW()
 		WHERE id = $1
-	`, addressID, newPubkey)
+	`, addressID, newPubkey, isFirstForTarget)
 	if err != nil {
-		return fmt.Errorf("failed to transfer address: %w", err)
+		return fmt.Errorf("transfer address: %w", err)
 	}
-	return nil
+
+	// Promote another address for the source pubkey if needed.
+	if wasPrimary && fromOthers > 0 {
+		if err := promotePrimaryAddress(ctx, tx, fromPubkey, addressID); err != nil {
+			return fmt.Errorf("promote primary after transfer: %w", err)
+		}
+	}
+	if wasNIP05Active && fromOthers > 0 {
+		if err := promoteNIP05Address(ctx, tx, fromPubkey, addressID); err != nil {
+			return fmt.Errorf("promote nip05 after transfer: %w", err)
+		}
+	}
+
+	// Transition ownership interval.
+	if err := closeOwnership(ctx, tx, username, domain, fromPubkey); err != nil {
+		return fmt.Errorf("close ownership: %w", err)
+	}
+	if err := openOwnership(ctx, tx, username, domain, newPubkey); err != nil {
+		return fmt.Errorf("open ownership: %w", err)
+	}
+
+	return tx.Commit()
 }
 
-// RegisterAddress registers a new address for a pubkey
+// RegisterAddress registers a new address for a pubkey (simple, no uniqueness checks).
+// Prefer AtomicRegisterAddress for production registration paths.
 func (s *Storage) RegisterAddress(ctx context.Context, username, domain, pubkey string) (*Address, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var existingCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, pubkey).Scan(&existingCount); err != nil {
+		return nil, fmt.Errorf("count existing: %w", err)
+	}
+	isFirst := existingCount == 0
+
 	addr := &Address{}
-	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO addresses (username, domain, pubkey, active, verified, created_at, updated_at)
-		VALUES ($1, $2, $3, true, false, NOW(), NOW())
-		RETURNING id, username, domain, pubkey, active, verified, created_at, updated_at
-	`, username, domain, pubkey).Scan(
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, false, $4, $4, NOW(), NOW())
+		RETURNING id, username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at
+	`, username, domain, pubkey, isFirst).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+		&addr.CreatedAt, &addr.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register address: %w", err)
 	}
+
+	if err := openOwnership(ctx, tx, username, domain, pubkey); err != nil {
+		return nil, fmt.Errorf("open ownership: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
 	return addr, nil
 }
 
-// AtomicRegisterAddress attempts to register a username atomically
-// Returns the address if successful, nil if username was taken
+// AtomicRegisterAddress attempts to register a username atomically.
+// Returns the address if successful, nil if username was taken or reserved.
+//
+// Alias pricing: pricing is determined by username length via username_tiers
+// (GetUsernamePrice / GetUsernameTier by the caller), so alias registrations
+// are priced identically to first-address registrations for the same name length.
+// No special-casing needed here.
 func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, pubkey string) (*Address, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -449,18 +613,50 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		return nil, nil // Reserved
 	}
 
-	// Register
+	// Is this the pubkey's first active address?
+	var existingCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, pubkey).Scan(&existingCount); err != nil {
+		return nil, fmt.Errorf("count existing addresses: %w", err)
+	}
+	isFirst := existingCount == 0
+
+	// Get the primary address ID for LN config inheritance (alias case only).
+	var primaryAddrID int64
+	if !isFirst {
+		_ = tx.QueryRowContext(ctx, `
+			SELECT id FROM addresses WHERE pubkey = $1 AND is_primary = TRUE AND active = TRUE LIMIT 1
+		`, pubkey).Scan(&primaryAddrID)
+	}
+
+	// Register the address.
 	addr := &Address{}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO addresses (username, domain, pubkey, active, verified, created_at, updated_at)
-		VALUES ($1, $2, $3, true, false, NOW(), NOW())
-		RETURNING id, username, domain, pubkey, active, verified, created_at, updated_at
-	`, username, domain, pubkey).Scan(
+		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, false, $4, $4, NOW(), NOW())
+		RETURNING id, username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at
+	`, username, domain, pubkey, isFirst).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
+		&addr.CreatedAt, &addr.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert address: %w", err)
+	}
+
+	// Open ownership interval.
+	if err := openOwnership(ctx, tx, username, domain, pubkey); err != nil {
+		return nil, fmt.Errorf("open ownership: %w", err)
+	}
+
+	// Inherit LN config from primary address for aliases.
+	if !isFirst && primaryAddrID != 0 {
+		if err := copyLightningConfig(ctx, tx, primaryAddrID, addr.ID); err != nil {
+			// Non-fatal: log but don't fail registration.
+			slog.Warn("failed to inherit lightning config for alias",
+				"primary_id", primaryAddrID, "alias_id", addr.ID, "error", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -757,6 +953,86 @@ func (s *Storage) GetWithdrawalsByPubkey(ctx context.Context, pubkey string, lim
 		withdrawals = append(withdrawals, w)
 	}
 	return withdrawals, nil
+}
+
+// promotePrimaryAddress sets is_primary=TRUE on the oldest active address for pubkey
+// (excluding exceptID). Called when a primary address is revoked or transferred.
+func promotePrimaryAddress(ctx context.Context, tx *sql.Tx, pubkey string, exceptID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET is_primary = TRUE, updated_at = NOW()
+		WHERE id = (
+			SELECT id FROM addresses
+			WHERE pubkey = $1 AND active = TRUE AND id != $2
+			ORDER BY created_at ASC
+			LIMIT 1
+		)
+	`, pubkey, exceptID)
+	return err
+}
+
+// promoteNIP05Address sets nip05_active=TRUE on the oldest active address for pubkey
+// (excluding exceptID). Called when the nip05_active address is revoked or transferred.
+func promoteNIP05Address(ctx context.Context, tx *sql.Tx, pubkey string, exceptID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET nip05_active = TRUE, updated_at = NOW()
+		WHERE id = (
+			SELECT id FROM addresses
+			WHERE pubkey = $1 AND active = TRUE AND id != $2
+			ORDER BY created_at ASC
+			LIMIT 1
+		)
+	`, pubkey, exceptID)
+	return err
+}
+
+// openOwnership inserts an open-ended ownership interval for (username, domain) → pubkey.
+func openOwnership(ctx context.Context, tx *sql.Tx, username, domain, pubkey string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO address_ownership (username, domain, pubkey, valid_from)
+		VALUES ($1, $2, $3, NOW())
+	`, username, domain, pubkey)
+	if err != nil {
+		return fmt.Errorf("open ownership: %w", err)
+	}
+	return nil
+}
+
+// closeOwnership sets valid_to=NOW() on all open intervals for (username, domain, pubkey).
+func closeOwnership(ctx context.Context, tx *sql.Tx, username, domain, pubkey string) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE address_ownership
+		SET valid_to = NOW()
+		WHERE username = $1 AND domain = $2 AND pubkey = $3 AND valid_to IS NULL
+	`, username, domain, pubkey)
+	if err != nil {
+		return fmt.Errorf("close ownership: %w", err)
+	}
+	return nil
+}
+
+// copyLightningConfig copies the lightning config from fromAddressID to toAddressID
+// inside a tx. Used to inherit LN config when granting an alias. No-ops if the
+// source has no config or if the target already has one.
+func copyLightningConfig(ctx context.Context, tx *sql.Tx, fromAddressID, toAddressID int64) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO address_lightning (
+			address_id, mode, proxy_address,
+			nwc_relay_url, nwc_wallet_pubkey, nwc_secret_encrypted,
+			min_sendable_msats, max_sendable_msats, comment_allowed,
+			allows_nostr, nwc_error_count, enabled, updated_at
+		)
+		SELECT $2, mode, proxy_address,
+		       nwc_relay_url, nwc_wallet_pubkey, nwc_secret_encrypted,
+		       min_sendable_msats, max_sendable_msats, comment_allowed,
+		       allows_nostr, 0, enabled, NOW()
+		FROM address_lightning
+		WHERE address_id = $1
+		ON CONFLICT (address_id) DO NOTHING
+	`, fromAddressID, toAddressID)
+	if err != nil {
+		return fmt.Errorf("copy lightning config: %w", err)
+	}
+	return nil
 }
 
 // Error definitions

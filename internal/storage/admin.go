@@ -15,14 +15,15 @@ var ErrNotFound = errors.New("not found")
 // AuditEntry is one row written to audit_log for an admin action. The DB
 // BEFORE INSERT trigger fills prev_hash/entry_hash to chain the entry.
 type AuditEntry struct {
-	TableName   string
-	RecordID    string
-	Action      string
-	ActorPubkey string
-	OldValues   any    // marshaled to JSONB (nil = NULL)
-	NewValues   any    // marshaled to JSONB (nil = NULL)
-	Metadata    any    // {source, user_agent, request_id, ...}
-	Signature   string // NIP-98 schnorr sig of the admin action (hex)
+	TableName     string
+	RecordID      string
+	Action        string
+	ActorPubkey   string
+	SubjectPubkey string // who the action was about (indexed; not in chain hash)
+	OldValues     any    // marshaled to JSONB (nil = NULL)
+	NewValues     any    // marshaled to JSONB (nil = NULL)
+	Metadata      any    // {source, user_agent, request_id, ...}
+	Signature     string // NIP-98 schnorr sig of the admin action (hex)
 }
 
 func toJSON(v any) (any, error) {
@@ -50,12 +51,19 @@ func writeAudit(ctx context.Context, tx *sql.Tx, e AuditEntry) error {
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
+
+	// subject_pubkey is stored as NULL when empty so the index stays selective.
+	var subjectPubkey interface{}
+	if e.SubjectPubkey != "" {
+		subjectPubkey = e.SubjectPubkey
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO audit_log
 			(table_name, record_id, action, actor_pubkey, actor_type,
-			 old_values, new_values, metadata, signature)
-		VALUES ($1, $2, $3, $4, 'user', $5, $6, $7, $8)
-	`, e.TableName, e.RecordID, e.Action, e.ActorPubkey, oldV, newV, meta, e.Signature)
+			 old_values, new_values, metadata, signature, subject_pubkey)
+		VALUES ($1, $2, $3, $4, 'user', $5, $6, $7, $8, $9)
+	`, e.TableName, e.RecordID, e.Action, e.ActorPubkey, oldV, newV, meta, e.Signature, subjectPubkey)
 	if err != nil {
 		return fmt.Errorf("write audit: %w", err)
 	}
@@ -123,7 +131,12 @@ func ensureUser(ctx context.Context, tx *sql.Tx, pubkey string) error {
 // ---------------------------------------------------------------------------
 
 // AdminGrantAddress creates an address for pubkey, bypassing payment and the
-// reserved-list. If the pubkey already holds an address it errors (one per user).
+// reserved-list. Supports N-addresses per pubkey:
+//   - First address for the pubkey: is_primary=TRUE, nip05_active=TRUE.
+//   - Subsequent addresses (aliases): is_primary=FALSE, nip05_active=FALSE;
+//     LN config is copied from the pubkey's primary address if one exists.
+//
+// The audit entry SubjectPubkey is set to the grantee pubkey.
 func (s *Storage) AdminGrantAddress(ctx context.Context, actor, sig, username, domain, pubkey string, displayName *string) (*Address, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -135,27 +148,70 @@ func (s *Storage) AdminGrantAddress(ctx context.Context, actor, sig, username, d
 		return nil, err
 	}
 
+	// Is this the first active address for this pubkey?
+	var existingCount int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, pubkey).Scan(&existingCount); err != nil {
+		return nil, fmt.Errorf("count existing addresses: %w", err)
+	}
+	isFirst := existingCount == 0
+
+	// For aliases, remember the primary address ID to inherit LN config.
+	var primaryAddrID int64
+	if !isFirst {
+		_ = tx.QueryRowContext(ctx, `
+			SELECT id FROM addresses WHERE pubkey = $1 AND is_primary = TRUE AND active = TRUE LIMIT 1
+		`, pubkey).Scan(&primaryAddrID)
+	}
+
 	addr := &Address{}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO addresses (username, domain, pubkey, active, verified, display_name, created_at, updated_at)
-		VALUES ($1, $2, $3, true, true, $4, NOW(), NOW())
-		RETURNING id, username, domain, pubkey, active, verified, display_name, created_at, updated_at
-	`, username, domain, pubkey, displayName).Scan(
+		INSERT INTO addresses
+			(username, domain, pubkey, active, verified, display_name,
+			 is_primary, nip05_active, created_at, updated_at)
+		VALUES ($1, $2, $3, true, true, $4, $5, $5, NOW(), NOW())
+		RETURNING id, username, domain, pubkey, active, verified,
+		          is_primary, nip05_active, display_name, created_at, updated_at
+	`, username, domain, pubkey, displayName, isFirst).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
-		&addr.Active, &addr.Verified, &addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
+		&addr.Active, &addr.Verified,
+		&addr.IsPrimary, &addr.NIP05Active,
+		&addr.DisplayName, &addr.CreatedAt, &addr.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert address: %w", err)
 	}
 
+	// Open ownership interval.
+	if err := openOwnership(ctx, tx, username, domain, pubkey); err != nil {
+		return nil, err
+	}
+
+	// Inherit LN config for aliases.
+	if !isFirst && primaryAddrID != 0 {
+		if err := copyLightningConfig(ctx, tx, primaryAddrID, addr.ID); err != nil {
+			// Non-fatal: log but don't abort the grant.
+			_ = err // suppress unused error
+		}
+	}
+
 	if err := writeAudit(ctx, tx, AuditEntry{
-		TableName:   "addresses",
-		RecordID:    fmt.Sprintf("%d", addr.ID),
-		Action:      "address.grant",
-		ActorPubkey: actor,
-		NewValues:   map[string]any{"username": username, "domain": domain, "pubkey": pubkey, "display_name": displayName},
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "addresses",
+		RecordID:      fmt.Sprintf("%d", addr.ID),
+		Action:        "address.grant",
+		ActorPubkey:   actor,
+		SubjectPubkey: pubkey,
+		NewValues: map[string]any{
+			"username":     username,
+			"domain":       domain,
+			"pubkey":       pubkey,
+			"display_name": displayName,
+			"is_primary":   isFirst,
+			"nip05_active": isFirst,
+		},
+		Metadata:  map[string]any{"source": "admin"},
+		Signature: sig,
 	}); err != nil {
 		return nil, err
 	}
@@ -165,7 +221,10 @@ func (s *Storage) AdminGrantAddress(ctx context.Context, actor, sig, username, d
 	return addr, nil
 }
 
-// AdminRevokeAddress deactivates an address (soft) and records a ban reason.
+// AdminRevokeAddress deactivates an address (soft-delete) and records a ban reason.
+// If the address was primary or nip05_active for its pubkey, and the pubkey still
+// has other active addresses, the oldest remaining address is promoted.
+// Closes the ownership interval.
 func (s *Storage) AdminRevokeAddress(ctx context.Context, actor, sig, username, domain, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -175,11 +234,12 @@ func (s *Storage) AdminRevokeAddress(ctx context.Context, actor, sig, username, 
 
 	var id int64
 	var prevPubkey string
+	var wasPrimary, wasNIP05Active bool
 	err = tx.QueryRowContext(ctx, `
 		UPDATE addresses SET active = false, ban_reason = $3, updated_at = NOW()
 		WHERE username = $1 AND domain = $2
-		RETURNING id, pubkey
-	`, username, domain, reason).Scan(&id, &prevPubkey)
+		RETURNING id, pubkey, is_primary, nip05_active
+	`, username, domain, reason).Scan(&id, &prevPubkey, &wasPrimary, &wasNIP05Active)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -187,15 +247,46 @@ func (s *Storage) AdminRevokeAddress(ctx context.Context, actor, sig, username, 
 		return fmt.Errorf("revoke address: %w", err)
 	}
 
+	// Close ownership interval.
+	if err := closeOwnership(ctx, tx, username, domain, prevPubkey); err != nil {
+		return err
+	}
+
+	// If this was the primary, promote another active address.
+	if wasPrimary {
+		var others int
+		_ = tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+		`, prevPubkey).Scan(&others)
+		if others > 0 {
+			if err := promotePrimaryAddress(ctx, tx, prevPubkey, id); err != nil {
+				return fmt.Errorf("promote primary on revoke: %w", err)
+			}
+		}
+	}
+	// If this was nip05_active, promote another.
+	if wasNIP05Active {
+		var others int
+		_ = tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+		`, prevPubkey).Scan(&others)
+		if others > 0 {
+			if err := promoteNIP05Address(ctx, tx, prevPubkey, id); err != nil {
+				return fmt.Errorf("promote nip05 on revoke: %w", err)
+			}
+		}
+	}
+
 	if err := writeAudit(ctx, tx, AuditEntry{
-		TableName:   "addresses",
-		RecordID:    fmt.Sprintf("%d", id),
-		Action:      "address.revoke",
-		ActorPubkey: actor,
-		OldValues:   map[string]any{"active": true, "pubkey": prevPubkey},
-		NewValues:   map[string]any{"active": false, "ban_reason": reason},
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "addresses",
+		RecordID:      fmt.Sprintf("%d", id),
+		Action:        "address.revoke",
+		ActorPubkey:   actor,
+		SubjectPubkey: prevPubkey,
+		OldValues:     map[string]any{"active": true, "pubkey": prevPubkey, "is_primary": wasPrimary, "nip05_active": wasNIP05Active},
+		NewValues:     map[string]any{"active": false, "ban_reason": reason},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
 	}); err != nil {
 		return err
 	}
@@ -203,6 +294,8 @@ func (s *Storage) AdminRevokeAddress(ctx context.Context, actor, sig, username, 
 }
 
 // AdminTransferAddress moves an address to a new pubkey (admin override).
+// Handles is_primary / nip05_active reassignment for both pubkeys and ownership intervals.
+// SubjectPubkey in the audit row is set to toPubkey; the fromPubkey is captured in OldValues.
 func (s *Storage) AdminTransferAddress(ctx context.Context, actor, sig, username, domain, toPubkey string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -216,7 +309,11 @@ func (s *Storage) AdminTransferAddress(ctx context.Context, actor, sig, username
 
 	var id int64
 	var fromPubkey string
-	err = tx.QueryRowContext(ctx, `SELECT id, pubkey FROM addresses WHERE username = $1 AND domain = $2`, username, domain).Scan(&id, &fromPubkey)
+	var wasPrimary, wasNIP05Active bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, pubkey, is_primary, nip05_active
+		FROM addresses WHERE username = $1 AND domain = $2
+	`, username, domain).Scan(&id, &fromPubkey, &wasPrimary, &wasNIP05Active)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -224,22 +321,60 @@ func (s *Storage) AdminTransferAddress(ctx context.Context, actor, sig, username
 		return fmt.Errorf("lookup address: %w", err)
 	}
 
+	// Count OTHER active addresses of the source pubkey (excluding this one).
+	var fromOthers int
+	_ = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE AND id != $2
+	`, fromPubkey, id).Scan(&fromOthers)
+
+	// Is this the target's first active address?
+	var toCount int
+	_ = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, toPubkey).Scan(&toCount)
+	isFirstForTarget := toCount == 0
+
+	// Transfer and set flags.
 	_, err = tx.ExecContext(ctx, `
-		UPDATE addresses SET pubkey = $2, last_transfer_at = NOW(), updated_at = NOW() WHERE id = $1
-	`, id, toPubkey)
+		UPDATE addresses
+		SET pubkey = $2, is_primary = $3, nip05_active = $3,
+		    last_transfer_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+	`, id, toPubkey, isFirstForTarget)
 	if err != nil {
 		return fmt.Errorf("transfer address: %w", err)
 	}
 
+	// Promote another address for the source pubkey if this was its primary.
+	if wasPrimary && fromOthers > 0 {
+		if err := promotePrimaryAddress(ctx, tx, fromPubkey, id); err != nil {
+			return fmt.Errorf("promote primary after admin transfer: %w", err)
+		}
+	}
+	if wasNIP05Active && fromOthers > 0 {
+		if err := promoteNIP05Address(ctx, tx, fromPubkey, id); err != nil {
+			return fmt.Errorf("promote nip05 after admin transfer: %w", err)
+		}
+	}
+
+	// Transition ownership interval.
+	if err := closeOwnership(ctx, tx, username, domain, fromPubkey); err != nil {
+		return err
+	}
+	if err := openOwnership(ctx, tx, username, domain, toPubkey); err != nil {
+		return err
+	}
+
 	if err := writeAudit(ctx, tx, AuditEntry{
-		TableName:   "addresses",
-		RecordID:    fmt.Sprintf("%d", id),
-		Action:      "address.transfer",
-		ActorPubkey: actor,
-		OldValues:   map[string]any{"pubkey": fromPubkey},
-		NewValues:   map[string]any{"pubkey": toPubkey},
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "addresses",
+		RecordID:      fmt.Sprintf("%d", id),
+		Action:        "address.transfer",
+		ActorPubkey:   actor,
+		SubjectPubkey: toPubkey,
+		OldValues:     map[string]any{"pubkey": fromPubkey},
+		NewValues:     map[string]any{"pubkey": toPubkey, "is_primary": isFirstForTarget},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
 	}); err != nil {
 		return err
 	}
@@ -249,7 +384,8 @@ func (s *Storage) AdminTransferAddress(ctx context.Context, actor, sig, username
 // AdminListAddressesByPubkey returns all addresses (active or not) for a pubkey.
 func (s *Storage) AdminListAddressesByPubkey(ctx context.Context, pubkey string) ([]Address, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, username, domain, pubkey, active, verified, display_name, created_at, updated_at, ban_reason
+		SELECT id, username, domain, pubkey, active, verified, is_primary, nip05_active,
+		       display_name, created_at, updated_at, ban_reason
 		FROM addresses WHERE pubkey = $1 ORDER BY created_at
 	`, pubkey)
 	if err != nil {
@@ -260,13 +396,193 @@ func (s *Storage) AdminListAddressesByPubkey(ctx context.Context, pubkey string)
 	var out []Address
 	for rows.Next() {
 		var a Address
-		if err := rows.Scan(&a.ID, &a.Username, &a.Domain, &a.Pubkey, &a.Active, &a.Verified,
-			&a.DisplayName, &a.CreatedAt, &a.UpdatedAt, &a.BanReason); err != nil {
+		if err := rows.Scan(
+			&a.ID, &a.Username, &a.Domain, &a.Pubkey,
+			&a.Active, &a.Verified, &a.IsPrimary, &a.NIP05Active,
+			&a.DisplayName, &a.CreatedAt, &a.UpdatedAt, &a.BanReason,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// SetAddressPrimary atomically sets the is_primary flag on the given address
+// for pubkey, unsetting it on any current primary first. The address must be
+// active and belong to pubkey.
+func (s *Storage) SetAddressPrimary(ctx context.Context, actor, sig, username, domain, pubkey string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var addrID int64
+	var addrPubkey string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, pubkey FROM addresses WHERE username = $1 AND domain = $2 AND active = TRUE
+	`, username, domain).Scan(&addrID, &addrPubkey)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lookup address: %w", err)
+	}
+	if addrPubkey != pubkey {
+		return fmt.Errorf("address %s@%s does not belong to pubkey", username, domain)
+	}
+
+	// Unset current primary for this pubkey.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET is_primary = FALSE, updated_at = NOW()
+		WHERE pubkey = $1 AND is_primary = TRUE
+	`, pubkey); err != nil {
+		return fmt.Errorf("unset primary: %w", err)
+	}
+
+	// Set new primary.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET is_primary = TRUE, updated_at = NOW() WHERE id = $1
+	`, addrID); err != nil {
+		return fmt.Errorf("set primary: %w", err)
+	}
+
+	if err := writeAudit(ctx, tx, AuditEntry{
+		TableName:     "addresses",
+		RecordID:      fmt.Sprintf("%d", addrID),
+		Action:        "address.set_primary",
+		ActorPubkey:   actor,
+		SubjectPubkey: pubkey,
+		NewValues:     map[string]any{"username": username, "domain": domain, "is_primary": true},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetAddressNIP05 atomically sets the nip05_active flag on the given address
+// for pubkey, unsetting it on any current nip05_active address first. The
+// address must be active and belong to pubkey.
+func (s *Storage) SetAddressNIP05(ctx context.Context, actor, sig, username, domain, pubkey string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var addrID int64
+	var addrPubkey string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, pubkey FROM addresses WHERE username = $1 AND domain = $2 AND active = TRUE
+	`, username, domain).Scan(&addrID, &addrPubkey)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lookup address: %w", err)
+	}
+	if addrPubkey != pubkey {
+		return fmt.Errorf("address %s@%s does not belong to pubkey", username, domain)
+	}
+
+	// Unset current nip05_active for this pubkey.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET nip05_active = FALSE, updated_at = NOW()
+		WHERE pubkey = $1 AND nip05_active = TRUE
+	`, pubkey); err != nil {
+		return fmt.Errorf("unset nip05_active: %w", err)
+	}
+
+	// Set new nip05_active.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE addresses SET nip05_active = TRUE, updated_at = NOW() WHERE id = $1
+	`, addrID); err != nil {
+		return fmt.Errorf("set nip05_active: %w", err)
+	}
+
+	if err := writeAudit(ctx, tx, AuditEntry{
+		TableName:     "addresses",
+		RecordID:      fmt.Sprintf("%d", addrID),
+		Action:        "address.set_nip05",
+		ActorPubkey:   actor,
+		SubjectPubkey: pubkey,
+		NewValues:     map[string]any{"username": username, "domain": domain, "nip05_active": true},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ---------------------------------------------------------------------------
+// User lookup (name → pubkey + addresses)
+// ---------------------------------------------------------------------------
+
+// AddressSummary is a compact address entry used in admin lookup responses.
+type AddressSummary struct {
+	Username    string    `json:"username"`
+	Domain      string    `json:"domain"`
+	Active      bool      `json:"active"`
+	IsPrimary   bool      `json:"is_primary"`
+	NIP05Active bool      `json:"nip05_active"`
+	DisplayName *string   `json:"display_name,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// UserLookup is the response for the admin name-to-pubkey resolver.
+type UserLookup struct {
+	Pubkey    string           `json:"pubkey"`
+	Addresses []AddressSummary `json:"addresses"`
+}
+
+// AdminLookupUser resolves a canonical username+domain to a pubkey and returns
+// all active addresses for that pubkey. Returns nil (not an error) when unknown.
+func (s *Storage) AdminLookupUser(ctx context.Context, name, domain string) (*UserLookup, error) {
+	// Find the pubkey currently holding this name.
+	var pubkey string
+	q := `SELECT pubkey FROM addresses WHERE username = $1 AND active = TRUE`
+	args := []any{name}
+	if domain != "" {
+		q += ` AND domain = $2`
+		args = append(args, domain)
+	}
+	q += ` LIMIT 1`
+
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&pubkey); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("lookup user: %w", err)
+	}
+
+	// Return all active addresses for that pubkey.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT username, domain, active, is_primary, nip05_active, display_name, created_at
+		FROM addresses
+		WHERE pubkey = $1 AND active = TRUE
+		ORDER BY is_primary DESC, created_at ASC
+	`, pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("list addresses: %w", err)
+	}
+	defer rows.Close()
+
+	var addrs []AddressSummary
+	for rows.Next() {
+		var a AddressSummary
+		if err := rows.Scan(&a.Username, &a.Domain, &a.Active, &a.IsPrimary, &a.NIP05Active, &a.DisplayName, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		addrs = append(addrs, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return &UserLookup{Pubkey: pubkey, Addresses: addrs}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -406,14 +722,15 @@ func (s *Storage) SetQuota(ctx context.Context, actor, sig, pubkey, quotaTypeID 
 		oldVal = map[string]any{"quota_limit": prev.Int64}
 	}
 	if err := writeAudit(ctx, tx, AuditEntry{
-		TableName:   "user_quotas",
-		RecordID:    pubkey + ":" + quotaTypeID,
-		Action:      "quota.set",
-		ActorPubkey: actor,
-		OldValues:   oldVal,
-		NewValues:   map[string]any{"quota_limit": limit},
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "user_quotas",
+		RecordID:      pubkey + ":" + quotaTypeID,
+		Action:        "quota.set",
+		ActorPubkey:   actor,
+		SubjectPubkey: pubkey,
+		OldValues:     oldVal,
+		NewValues:     map[string]any{"quota_limit": limit},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
 	}); err != nil {
 		return err
 	}
@@ -437,12 +754,13 @@ func (s *Storage) ResetQuota(ctx context.Context, actor, sig, pubkey, quotaTypeI
 	}
 
 	if err := writeAudit(ctx, tx, AuditEntry{
-		TableName:   "user_quotas",
-		RecordID:    pubkey + ":" + quotaTypeID,
-		Action:      "quota.reset",
-		ActorPubkey: actor,
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "user_quotas",
+		RecordID:      pubkey + ":" + quotaTypeID,
+		Action:        "quota.reset",
+		ActorPubkey:   actor,
+		SubjectPubkey: pubkey,
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
 	}); err != nil {
 		return err
 	}
@@ -546,34 +864,109 @@ func (s *Storage) UpdateTier(ctx context.Context, actor, sig, tierName string, p
 
 // AuditRow is a returned audit_log entry.
 type AuditRow struct {
-	ID          int64           `json:"id"`
-	TableName   string          `json:"table_name"`
-	RecordID    *string         `json:"record_id,omitempty"`
-	Action      string          `json:"action"`
-	ActorPubkey *string         `json:"actor_pubkey,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	OldValues   json.RawMessage `json:"old_values,omitempty"`
-	NewValues   json.RawMessage `json:"new_values,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	Signature   *string         `json:"signature,omitempty"`
-	PrevHash    *string         `json:"prev_hash,omitempty"`
-	EntryHash   *string         `json:"entry_hash,omitempty"`
+	ID            int64           `json:"id"`
+	TableName     string          `json:"table_name"`
+	RecordID      *string         `json:"record_id,omitempty"`
+	Action        string          `json:"action"`
+	ActorPubkey   *string         `json:"actor_pubkey,omitempty"`
+	SubjectPubkey *string         `json:"subject_pubkey,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	OldValues     json.RawMessage `json:"old_values,omitempty"`
+	NewValues     json.RawMessage `json:"new_values,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	Signature     *string         `json:"signature,omitempty"`
+	PrevHash      *string         `json:"prev_hash,omitempty"`
+	EntryHash     *string         `json:"entry_hash,omitempty"`
 }
 
-// ListAudit returns recent audit entries, newest first, optionally filtered.
-func (s *Storage) ListAudit(ctx context.Context, action, actor string, limit, offset int) ([]AuditRow, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+// AuditListFilter holds filter criteria for ListAudit.
+type AuditListFilter struct {
+	// Action and actor narrow by exact match ("" = no filter).
+	Action string
+	Actor  string
+
+	// Subject matches audit_log.subject_pubkey directly.
+	Subject string
+
+	// Name + Domain resolve via address_ownership temporal join:
+	// the audit row's created_at must fall within the ownership interval
+	// for (Name, Domain) → subject_pubkey.
+	Name   string
+	Domain string
+
+	// Start / End filter audit_log.created_at (nil = no bound).
+	Start *time.Time
+	End   *time.Time
+
+	Limit  int
+	Offset int
+}
+
+// ListAudit returns audit entries newest-first, applying all set filters.
+// Subject and Name filters are unioned (either match qualifies).
+func (s *Storage) ListAudit(ctx context.Context, f AuditListFilter) ([]AuditRow, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		f.Limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, table_name, record_id, action, actor_pubkey, created_at,
-		       old_values, new_values, metadata, signature, prev_hash, entry_hash
-		FROM audit_log
-		WHERE ($1 = '' OR action = $1)
-		  AND ($2 = '' OR actor_pubkey = $2)
-		ORDER BY id DESC
-		LIMIT $3 OFFSET $4
-	`, action, actor, limit, offset)
+
+	// Build the subject/name predicate dynamically to avoid always-false branches.
+	// $1...$4 are action, actor, start, end.
+	// The subject/name block is $5, $6, $7.
+	var subjectClause string
+	switch {
+	case f.Subject == "" && f.Name == "":
+		subjectClause = "TRUE" // no filter
+	case f.Subject != "" && f.Name == "":
+		subjectClause = "al.subject_pubkey = $5"
+	case f.Subject == "" && f.Name != "":
+		subjectClause = `EXISTS (
+			SELECT 1 FROM address_ownership ao
+			WHERE ao.username = $6
+			  AND ($7 = '' OR ao.domain = $7)
+			  AND ao.pubkey = al.subject_pubkey
+			  AND ao.valid_from <= al.created_at
+			  AND (ao.valid_to IS NULL OR ao.valid_to > al.created_at)
+		)`
+	default: // both set — union
+		subjectClause = `(al.subject_pubkey = $5 OR EXISTS (
+			SELECT 1 FROM address_ownership ao
+			WHERE ao.username = $6
+			  AND ($7 = '' OR ao.domain = $7)
+			  AND ao.pubkey = al.subject_pubkey
+			  AND ao.valid_from <= al.created_at
+			  AND (ao.valid_to IS NULL OR ao.valid_to > al.created_at)
+		))`
+	}
+
+	q := fmt.Sprintf(`
+		SELECT al.id, al.table_name, al.record_id, al.action, al.actor_pubkey,
+		       al.subject_pubkey, al.created_at,
+		       al.old_values, al.new_values, al.metadata,
+		       al.signature, al.prev_hash, al.entry_hash
+		FROM audit_log al
+		WHERE ($1 = '' OR al.action = $1)
+		  AND ($2 = '' OR al.actor_pubkey = $2)
+		  AND ($3::TIMESTAMPTZ IS NULL OR al.created_at >= $3)
+		  AND ($4::TIMESTAMPTZ IS NULL OR al.created_at <= $4)
+		  AND (%s)
+		ORDER BY al.id DESC
+		LIMIT $8 OFFSET $9
+	`, subjectClause)
+
+	// Always pass all 9 positional params; unused ones are ignored by the DB.
+	var startVal, endVal interface{}
+	if f.Start != nil {
+		startVal = *f.Start
+	}
+	if f.End != nil {
+		endVal = *f.End
+	}
+
+	rows, err := s.db.QueryContext(ctx, q,
+		f.Action, f.Actor, startVal, endVal,
+		f.Subject, f.Name, f.Domain,
+		f.Limit, f.Offset,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("list audit: %w", err)
 	}
@@ -582,11 +975,16 @@ func (s *Storage) ListAudit(ctx context.Context, action, actor string, limit, of
 	var out []AuditRow
 	for rows.Next() {
 		var r AuditRow
-		if err := rows.Scan(&r.ID, &r.TableName, &r.RecordID, &r.Action, &r.ActorPubkey, &r.CreatedAt,
-			&r.OldValues, &r.NewValues, &r.Metadata, &r.Signature, &r.PrevHash, &r.EntryHash); err != nil {
+		if err := rows.Scan(
+			&r.ID, &r.TableName, &r.RecordID, &r.Action, &r.ActorPubkey,
+			&r.SubjectPubkey, &r.CreatedAt,
+			&r.OldValues, &r.NewValues, &r.Metadata,
+			&r.Signature, &r.PrevHash, &r.EntryHash,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
+
