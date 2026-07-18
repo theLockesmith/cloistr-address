@@ -6,8 +6,14 @@
 --
 -- IMPORTANT: the run-migrations init container re-applies every *_up.sql on every
 -- pod start with no tracking table, so this file MUST stay fully idempotent.
-
-BEGIN;
+--
+-- OWNERSHIP NOTE: this migration runs as DB user `cloistr`, which owns `addresses`
+-- but NOT `public.audit_log` (postgres-owned). It therefore only manages
+-- cloistr-owned objects. `audit_log.subject_pubkey` is applied via the base schema
+-- as postgres (unified-platform-schema.sql). Do NOT re-add an ALTER audit_log here:
+-- it fails "must be owner of table audit_log" and, if wrapped in a transaction with
+-- the rest, rolls the whole migration back. No BEGIN/COMMIT wrapper for the same
+-- reason — keep each statement autonomous and idempotent.
 
 -- 1. addresses: allow N per pubkey; add primary + NIP-05-active flags -------------
 ALTER TABLE addresses DROP CONSTRAINT IF EXISTS addresses_unique_pubkey;
@@ -63,12 +69,7 @@ WHERE a.active
   );
 
 -- 3. audit_log subject anchor ------------------------------------------------------
--- First-class, indexed "who this action was about" column, so audit search can
--- resolve a canonical name -> pubkey(s) (via address_ownership, scoped to the row's
--- timestamp) and match actions. Deliberately NOT added to the audit_log_chain()
--- hash payload: changing that function would break retroactive verification of
--- existing chained rows. This is a queryable column only.
-ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS subject_pubkey CHAR(64);
-CREATE INDEX IF NOT EXISTS idx_audit_log_subject ON audit_log(subject_pubkey);
-
-COMMIT;
+-- NOTE: `audit_log.subject_pubkey` (+ idx_audit_log_subject) is required by the audit
+-- search/write code but is applied by the base schema as postgres — `audit_log` is
+-- postgres-owned and `cloistr` cannot ALTER it. See unified-platform-schema.sql
+-- (Migration 005 block). It is intentionally NOT altered here.
