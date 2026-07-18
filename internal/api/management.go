@@ -26,28 +26,50 @@ type UsernameAvailabilityResponse struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// AddressResponse represents a user's address details
+// AddressEntry is a compact per-address entry in the /addresses/me response.
+type AddressEntry struct {
+	Username    string    `json:"username"`
+	Domain      string    `json:"domain"`
+	IsPrimary   bool      `json:"is_primary"`
+	NIP05Active bool      `json:"nip05_active"`
+	Active      bool      `json:"active"`
+	Verified    bool      `json:"verified"`
+	DisplayName *string   `json:"display_name,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// AddressResponse represents a user's address details.
+// Top-level fields reflect the primary address for backwards compatibility.
+// The Addresses list contains all active addresses for the pubkey.
 type AddressResponse struct {
-	Username   string                    `json:"username"`
-	Domain     string                    `json:"domain"`
-	Pubkey     string                    `json:"pubkey"`
-	Active     bool                      `json:"active"`
-	Verified   bool                      `json:"verified"`
-	Lightning  *LightningConfigResponse  `json:"lightning,omitempty"`
-	Relays     []string                  `json:"relays,omitempty"`
+	// Primary-address fields (backward-compatible top-level).
+	Username    string  `json:"username"`
+	Domain      string  `json:"domain"`
+	Pubkey      string  `json:"pubkey"`
+	Active      bool    `json:"active"`
+	Verified    bool    `json:"verified"`
+	IsPrimary   bool    `json:"is_primary"`
+	NIP05Active bool    `json:"nip05_active"`
+	DisplayName *string `json:"display_name,omitempty"`
+
+	// All active addresses for this pubkey (primary first).
+	Addresses []AddressEntry `json:"addresses"`
+
+	Lightning *LightningConfigResponse `json:"lightning,omitempty"`
+	Relays    []string                 `json:"relays,omitempty"`
 }
 
 // LightningConfigResponse represents Lightning Address config
 type LightningConfigResponse struct {
-	Mode           string  `json:"mode"`
-	ProxyAddress   string  `json:"proxy_address,omitempty"`
-	NWCConfigured  bool    `json:"nwc_configured,omitempty"`
-	NWCErrorCount  int     `json:"nwc_error_count,omitempty"`
-	MinSendableSat int64   `json:"min_sendable_sat"`
-	MaxSendableSat int64   `json:"max_sendable_sat"`
-	CommentAllowed int     `json:"comment_allowed"`
-	AllowsNostr    bool    `json:"allows_nostr"`
-	Enabled        bool    `json:"enabled"`
+	Mode           string `json:"mode"`
+	ProxyAddress   string `json:"proxy_address,omitempty"`
+	NWCConfigured  bool   `json:"nwc_configured,omitempty"`
+	NWCErrorCount  int    `json:"nwc_error_count,omitempty"`
+	MinSendableSat int64  `json:"min_sendable_sat"`
+	MaxSendableSat int64  `json:"max_sendable_sat"`
+	CommentAllowed int    `json:"comment_allowed"`
+	AllowsNostr    bool   `json:"allows_nostr"`
+	Enabled        bool   `json:"enabled"`
 }
 
 // UpdateLightningConfigRequest represents a request to update Lightning config
@@ -110,16 +132,17 @@ func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// getMyAddress returns the authenticated user's address
+// getMyAddress returns the authenticated user's primary address plus their full
+// address list.
 // GET /api/v1/addresses/me
 func (h *Handler) getMyAddress(c *gin.Context) {
 	ctx := c.Request.Context()
 	pubkey := auth.GetPubkey(c)
 
-	// Look up address for this pubkey
-	address, err := h.store.GetAddressByPubkey(ctx, pubkey)
+	// Look up the primary address.
+	address, err := h.store.GetPrimaryAddressByPubkey(ctx, pubkey)
 	if err != nil {
-		slog.Error("failed to get address", "pubkey", pubkey, "error", err)
+		slog.Error("failed to get primary address", "pubkey", pubkey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 		return
 	}
@@ -131,25 +154,48 @@ func (h *Handler) getMyAddress(c *gin.Context) {
 		return
 	}
 
-	// Get relay hints
+	// Get relay hints for the primary address.
 	relays, err := h.store.GetAddressRelays(ctx, address.ID)
 	if err != nil {
 		slog.Warn("failed to get relays", "address_id", address.ID, "error", err)
 	}
 
-	// Get lightning config
+	// Get lightning config for the primary address.
 	lightning, err := h.store.GetLightningConfig(ctx, address.ID)
 	if err != nil {
 		slog.Warn("failed to get lightning config", "address_id", address.ID, "error", err)
 	}
 
+	// Get all active addresses for the pubkey.
+	allAddrs, err := h.store.GetAddressesByPubkey(ctx, pubkey)
+	if err != nil {
+		slog.Warn("failed to list addresses", "pubkey", pubkey, "error", err)
+	}
+	entries := make([]AddressEntry, 0, len(allAddrs))
+	for _, a := range allAddrs {
+		entries = append(entries, AddressEntry{
+			Username:    a.Username,
+			Domain:      a.Domain,
+			IsPrimary:   a.IsPrimary,
+			NIP05Active: a.NIP05Active,
+			Active:      a.Active,
+			Verified:    a.Verified,
+			DisplayName: a.DisplayName,
+			CreatedAt:   a.CreatedAt,
+		})
+	}
+
 	response := AddressResponse{
-		Username: address.Username,
-		Domain:   address.Domain,
-		Pubkey:   address.Pubkey,
-		Active:   address.Active,
-		Verified: address.Verified,
-		Relays:   relays,
+		Username:    address.Username,
+		Domain:      address.Domain,
+		Pubkey:      address.Pubkey,
+		Active:      address.Active,
+		Verified:    address.Verified,
+		IsPrimary:   address.IsPrimary,
+		NIP05Active: address.NIP05Active,
+		DisplayName: address.DisplayName,
+		Addresses:   entries,
+		Relays:      relays,
 	}
 
 	if lightning != nil {
@@ -169,7 +215,8 @@ func (h *Handler) getMyAddress(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// updateLightningConfig updates the user's Lightning Address configuration
+// updateLightningConfig updates the user's Lightning Address configuration.
+// Operates on the primary address.
 // PUT /api/v1/addresses/lightning
 func (h *Handler) updateLightningConfig(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -214,10 +261,10 @@ func (h *Handler) updateLightningConfig(c *gin.Context) {
 		}
 	}
 
-	// Get user's address
-	address, err := h.store.GetAddressByPubkey(ctx, pubkey)
+	// Get user's primary address (lightning config lives on the primary).
+	address, err := h.store.GetPrimaryAddressByPubkey(ctx, pubkey)
 	if err != nil {
-		slog.Error("failed to get address", "pubkey", pubkey, "error", err)
+		slog.Error("failed to get primary address", "pubkey", pubkey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 		return
 	}
@@ -288,7 +335,10 @@ func isValidLightningAddress(addr string) bool {
 	return len(parts[0]) > 0 && len(parts[1]) > 2 && strings.Contains(parts[1], ".")
 }
 
-// transferAddress transfers ownership of an address to another pubkey
+// transferAddress transfers the caller's PRIMARY address to another pubkey.
+// Multi-address is now allowed: the transfer does NOT fail if the target already
+// has addresses — the transferred address becomes primary only if the target has
+// none, otherwise it becomes an alias.
 // POST /api/v1/addresses/transfer
 func (h *Handler) transferAddress(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -314,10 +364,10 @@ func (h *Handler) transferAddress(c *gin.Context) {
 		return
 	}
 
-	// Get user's address
-	address, err := h.store.GetAddressByPubkey(ctx, pubkey)
+	// Get user's primary address (self-serve transfer operates on the primary).
+	address, err := h.store.GetPrimaryAddressByPubkey(ctx, pubkey)
 	if err != nil {
-		slog.Error("failed to get address", "pubkey", pubkey, "error", err)
+		slog.Error("failed to get primary address", "pubkey", pubkey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 		return
 	}
@@ -332,26 +382,15 @@ func (h *Handler) transferAddress(c *gin.Context) {
 		cooldownEnd := address.LastTransferAt.AddDate(0, 0, 7)
 		if cooldownEnd.After(timeNow()) {
 			c.JSON(http.StatusTooEarly, gin.H{
-				"error":          "Transfer cooldown active",
-				"cooldown_ends":  cooldownEnd.Format("2006-01-02T15:04:05Z"),
+				"error":         "Transfer cooldown active",
+				"cooldown_ends": cooldownEnd.Format("2006-01-02T15:04:05Z"),
 			})
 			return
 		}
 	}
 
-	// Check if new pubkey already has an address
-	existingAddr, err := h.store.GetAddressByPubkey(ctx, req.NewPubkey)
-	if err != nil {
-		slog.Error("failed to check new pubkey", "new_pubkey", req.NewPubkey, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
-		return
-	}
-	if existingAddr != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Target pubkey already has an address"})
-		return
-	}
-
-	// Perform transfer
+	// Perform transfer. TransferAddress now handles is_primary/nip05_active
+	// reassignment and ownership intervals internally.
 	err = h.store.TransferAddress(ctx, address.ID, req.NewPubkey)
 	if err != nil {
 		slog.Error("failed to transfer address", "address_id", address.ID, "new_pubkey", req.NewPubkey, "error", err)

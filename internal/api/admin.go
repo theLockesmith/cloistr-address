@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nbd-wtf/go-nostr"
@@ -43,6 +44,11 @@ func (h *Handler) registerAdminRoutes(r *gin.Engine) {
 		admin.POST("/addresses/grant", h.adminGrantAddress)
 		admin.POST("/addresses/revoke", h.adminRevokeAddress)
 		admin.POST("/addresses/transfer", h.adminTransferAddress)
+		admin.POST("/addresses/primary", h.adminSetAddressPrimary)
+		admin.POST("/addresses/nip05", h.adminSetAddressNIP05)
+
+		// User lookup (name → pubkey + all addresses)
+		admin.GET("/users/lookup", h.adminLookupUser)
 
 		// Reserved usernames
 		admin.GET("/reserved", h.adminListReserved)
@@ -243,8 +249,19 @@ func (h *Handler) adminGrantAddress(c *gin.Context) {
 		abortStore(c, err, "Failed to grant address")
 		return
 	}
-	slog.Info("admin granted address", "username", addr.Username, "pubkey", safePrefix(req.Pubkey), "actor", safePrefix(actor))
-	c.JSON(http.StatusOK, gin.H{"success": true, "address_id": addr.ID, "username": addr.Username, "domain": addr.Domain})
+	slog.Info("admin granted address",
+		"username", addr.Username, "domain", addr.Domain,
+		"is_primary", addr.IsPrimary, "nip05_active", addr.NIP05Active,
+		"pubkey", safePrefix(req.Pubkey), "actor", safePrefix(actor),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"success":      true,
+		"address_id":   addr.ID,
+		"username":     addr.Username,
+		"domain":       addr.Domain,
+		"is_primary":   addr.IsPrimary,
+		"nip05_active": addr.NIP05Active,
+	})
 }
 
 type adminRevokeAddressRequest struct {
@@ -313,12 +330,105 @@ func (h *Handler) adminListAddresses(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"addresses": addrs})
 }
 
+// adminSetAddressPrimary flips is_primary for the given (username, domain, pubkey).
+// POST /admin/v1/addresses/primary
+// Body: {"username":"alice","domain":"cloistr.xyz","pubkey":"<64hex>"}
+func (h *Handler) adminSetAddressPrimary(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Domain   string `json:"domain,omitempty"`
+		Pubkey   string `json:"pubkey" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+	if !validPubkey(req.Pubkey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pubkey format"})
+		return
+	}
+	domain := req.Domain
+	if domain == "" {
+		domain = h.cfg.Domain
+	}
+	actor, sig := adminActor(c)
+	if err := h.store.SetAddressPrimary(c.Request.Context(), actor, sig, strings.ToLower(req.Username), domain, req.Pubkey); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		slog.Error("set_primary failed", "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// adminSetAddressNIP05 flips nip05_active for the given (username, domain, pubkey).
+// POST /admin/v1/addresses/nip05
+// Body: {"username":"alice","domain":"cloistr.xyz","pubkey":"<64hex>"}
+func (h *Handler) adminSetAddressNIP05(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Domain   string `json:"domain,omitempty"`
+		Pubkey   string `json:"pubkey" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+	if !validPubkey(req.Pubkey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pubkey format"})
+		return
+	}
+	domain := req.Domain
+	if domain == "" {
+		domain = h.cfg.Domain
+	}
+	actor, sig := adminActor(c)
+	if err := h.store.SetAddressNIP05(c.Request.Context(), actor, sig, strings.ToLower(req.Username), domain, req.Pubkey); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		slog.Error("set_nip05 failed", "error", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// adminLookupUser resolves a canonical username to a pubkey and all its active addresses.
+// GET /admin/v1/users/lookup?name=alice&domain=cloistr.xyz
+func (h *Handler) adminLookupUser(c *gin.Context) {
+	name := strings.ToLower(c.Query("name"))
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name query param required"})
+		return
+	}
+	domain := c.Query("domain")
+	if domain == "" {
+		domain = h.cfg.Domain
+	}
+
+	result, err := h.store.AdminLookupUser(c.Request.Context(), name, domain)
+	if err != nil {
+		abortStore(c, err, "Failed to lookup user")
+		return
+	}
+	if result == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // --- Reserved ---
 
 type adminAddReservedRequest struct {
-	Username string  `json:"username" binding:"required"`
+	Username  string  `json:"username" binding:"required"`
 	ForPubkey *string `json:"for_pubkey,omitempty"` // nil = block entirely
-	Reason   string  `json:"reason,omitempty"`
+	Reason    string  `json:"reason,omitempty"`
 }
 
 func (h *Handler) adminAddReserved(c *gin.Context) {
@@ -458,13 +568,14 @@ func (h *Handler) adminGrantCredits(c *gin.Context) {
 	}
 	// credit_history already records the change; add a signed admin audit row too.
 	if err := h.store.LogAdminAudit(ctx, storage.AuditEntry{
-		TableName:   "pubkey_credits",
-		RecordID:    req.Pubkey,
-		Action:      "credits.grant",
-		ActorPubkey: actor,
-		NewValues:   map[string]any{"amount_sats": req.AmountSats, "reason": req.Reason, "reference_id": req.ReferenceID},
-		Metadata:    map[string]any{"source": "admin"},
-		Signature:   sig,
+		TableName:     "pubkey_credits",
+		RecordID:      req.Pubkey,
+		Action:        "credits.grant",
+		ActorPubkey:   actor,
+		SubjectPubkey: req.Pubkey,
+		NewValues:     map[string]any{"amount_sats": req.AmountSats, "reason": req.Reason, "reference_id": req.ReferenceID},
+		Metadata:      map[string]any{"source": "admin"},
+		Signature:     sig,
 	}); err != nil {
 		slog.Warn("credits granted but audit write failed", "pubkey", safePrefix(req.Pubkey), "error", err)
 	}
@@ -511,12 +622,53 @@ func (h *Handler) adminUpdateTier(c *gin.Context) {
 
 // --- Audit ---
 
+// adminListAudit returns audit log entries with optional filters.
+// GET /admin/v1/audit
+// Query params:
+//
+//	action   — exact action match (e.g. "address.grant")
+//	actor    — actor pubkey (hex)
+//	subject  — subject pubkey (hex) — direct match on audit_log.subject_pubkey
+//	name     — canonical username, resolved temporally via address_ownership
+//	domain   — domain for name resolution (defaults to server domain if name set)
+//	start    — RFC3339 lower bound on created_at (inclusive)
+//	end      — RFC3339 upper bound on created_at (inclusive)
+//	limit    — max rows (default 100, max 500)
+//	offset   — pagination offset
 func (h *Handler) adminListAudit(c *gin.Context) {
-	action := c.Query("action")
-	actor := c.Query("actor")
-	limit, _ := strconv.Atoi(c.Query("limit"))
-	offset, _ := strconv.Atoi(c.Query("offset"))
-	rows, err := h.store.ListAudit(c.Request.Context(), action, actor, limit, offset)
+	f := storage.AuditListFilter{
+		Action:  c.Query("action"),
+		Actor:   c.Query("actor"),
+		Subject: c.Query("subject"),
+		Name:    strings.ToLower(c.Query("name")),
+		Domain:  c.Query("domain"),
+	}
+
+	// Default domain for name resolution.
+	if f.Name != "" && f.Domain == "" {
+		f.Domain = h.cfg.Domain
+	}
+
+	if s := c.Query("start"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			f.Start = &t
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start: must be RFC3339"})
+			return
+		}
+	}
+	if e := c.Query("end"); e != "" {
+		if t, err := time.Parse(time.RFC3339, e); err == nil {
+			f.End = &t
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end: must be RFC3339"})
+			return
+		}
+	}
+	f.Limit, _ = strconv.Atoi(c.Query("limit"))
+	f.Offset, _ = strconv.Atoi(c.Query("offset"))
+
+	rows, err := h.store.ListAudit(c.Request.Context(), f)
 	if err != nil {
 		abortStore(c, err, "Failed to list audit log")
 		return
