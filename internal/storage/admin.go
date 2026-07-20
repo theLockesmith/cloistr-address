@@ -769,12 +769,16 @@ func (s *Storage) ResetQuota(ctx context.Context, actor, sig, pubkey, quotaTypeI
 
 // GetQuotas returns all quota types with the user's effective limits.
 func (s *Storage) GetQuotas(ctx context.Context, pubkey string) ([]QuotaView, error) {
+	// effective_quota() resolves the identity-scaled limit + non-expired grants and
+	// the SUM of per-service usage (user_quota_usage) — the same values enforcement
+	// uses — so the admin view matches what services actually enforce. is_override
+	// still reflects whether an explicit user_quotas row exists.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT qt.id, qt.display_name, qt.unit,
-		       COALESCE(uq.quota_limit, qt.default_limit) AS quota_limit,
-		       COALESCE(uq.current_usage, 0) AS current_usage,
+		       eq.quota_limit, eq.current_usage,
 		       (uq.pubkey IS NOT NULL) AS is_override
 		FROM quota_types qt
+		CROSS JOIN LATERAL effective_quota($1, qt.id) eq
 		LEFT JOIN user_quotas uq ON uq.quota_type_id = qt.id AND uq.pubkey = $1
 		ORDER BY qt.id
 	`, pubkey)

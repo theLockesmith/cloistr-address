@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -129,6 +130,97 @@ func (h *Handler) grantCredits(c *gin.Context) {
 		AmountSats:  req.AmountSats,
 		NewBalance:  newBalance,
 		ReferenceID: req.ReferenceID,
+	})
+}
+
+// QuotaUsageRequest records a service's usage delta against a pubkey's shared pool.
+type QuotaUsageRequest struct {
+	Pubkey      string `json:"pubkey" binding:"required"`
+	Service     string `json:"service" binding:"required"`
+	QuotaTypeID string `json:"quota_type_id"` // defaults to storage_bytes
+	Bytes       int64  `json:"bytes"`         // additive delta; negative = release
+}
+
+// checkQuota reports whether a pubkey can absorb `bytes` more of a quota type.
+// GET /internal/v1/quotas/check?pubkey=&quota_type=&bytes=
+// Used by services without a direct DB connection (e.g. a future thin uploader).
+func (h *Handler) checkQuota(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	pubkey := c.Query("pubkey")
+	if len(pubkey) != 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pubkey query param required (64 hex)"})
+		return
+	}
+	quotaType := c.Query("quota_type")
+	if quotaType == "" {
+		quotaType = "storage_bytes"
+	}
+	var bytes int64
+	if v := c.Query("bytes"); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bytes must be an integer"})
+			return
+		}
+		bytes = parsed
+	}
+
+	eq, err := h.store.EffectiveQuota(ctx, pubkey, quotaType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve quota"})
+		return
+	}
+	allowed, err := h.store.CheckQuota(ctx, pubkey, quotaType, bytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check quota"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"allowed":   allowed,
+		"limit":     eq.Limit,
+		"used":      eq.Used,
+		"remaining": eq.Remaining,
+	})
+}
+
+// recordQuotaUsage adds a service's usage delta to a pubkey's shared pool.
+// POST /internal/v1/quotas/usage {pubkey, service, quota_type_id, bytes}
+func (h *Handler) recordQuotaUsage(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	var req QuotaUsageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+	if len(req.Pubkey) != 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pubkey format"})
+		return
+	}
+	if req.QuotaTypeID == "" {
+		req.QuotaTypeID = "storage_bytes"
+	}
+
+	if err := h.store.RecordServiceUsage(ctx, req.Pubkey, req.QuotaTypeID, req.Service, req.Bytes); err != nil {
+		slog.Error("failed to record usage",
+			"pubkey", req.Pubkey, "service", req.Service, "bytes", req.Bytes, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to record usage"})
+		return
+	}
+
+	eq, err := h.store.EffectiveQuota(ctx, req.Pubkey, req.QuotaTypeID)
+	if err != nil {
+		// Usage was recorded; failing to read back the total is non-fatal.
+		c.JSON(http.StatusOK, gin.H{"success": true})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"limit":     eq.Limit,
+		"used":      eq.Used,
+		"remaining": eq.Remaining,
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"git.aegis-hq.xyz/coldforge/cloistr-common/username"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/config"
 )
 
@@ -580,7 +581,7 @@ func (s *Storage) RegisterAddress(ctx context.Context, username, domain, pubkey 
 // (GetUsernamePrice / GetUsernameTier by the caller), so alias registrations
 // are priced identically to first-address registrations for the same name length.
 // No special-casing needed here.
-func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, pubkey string) (*Address, error) {
+func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, pubkey string, autoAssigned bool) (*Address, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -613,16 +614,26 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		return nil, nil // Reserved
 	}
 
-	// Is this the pubkey's first active address?
-	var existingCount int
+	// Count the pubkey's existing active addresses, and how many are "real" (not
+	// auto-assigned). This drives primary promotion: an anonymous user starts with
+	// only an auto-assigned address; when they claim their first real name it must
+	// become primary and the auto address is demoted to a plain alias (kept, so
+	// anything already sent to it still delivers — pricing-model.md).
+	var existingActive, existingRealActive int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
-	`, pubkey).Scan(&existingCount); err != nil {
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE COALESCE(auto_assigned, FALSE) = FALSE)
+		FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, pubkey).Scan(&existingActive, &existingRealActive); err != nil {
 		return nil, fmt.Errorf("count existing addresses: %w", err)
 	}
-	isFirst := existingCount == 0
+	isFirst := existingActive == 0
+	// Promote when this is a real name and every existing active address is auto-assigned.
+	promote := !isFirst && !autoAssigned && existingRealActive == 0
+	makePrimary := isFirst || promote
 
-	// Get the primary address ID for LN config inheritance (alias case only).
+	// Capture the current primary (for LN inheritance) before any demotion.
 	var primaryAddrID int64
 	if !isFirst {
 		_ = tx.QueryRowContext(ctx, `
@@ -630,13 +641,24 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		`, pubkey).Scan(&primaryAddrID)
 	}
 
+	// On promotion, demote the incumbent auto-assigned primary/NIP-05 first so the
+	// one-primary / one-nip05 partial-unique indexes aren't violated by the insert.
+	if promote {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE addresses SET is_primary = FALSE, nip05_active = FALSE, updated_at = NOW()
+			WHERE pubkey = $1 AND active = TRUE AND (is_primary = TRUE OR nip05_active = TRUE)
+		`, pubkey); err != nil {
+			return nil, fmt.Errorf("demote auto-assigned primary: %w", err)
+		}
+	}
+
 	// Register the address.
 	addr := &Address{}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at)
-		VALUES ($1, $2, $3, true, false, $4, $4, NOW(), NOW())
+		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, auto_assigned, created_at, updated_at)
+		VALUES ($1, $2, $3, true, false, $4, $4, $5, NOW(), NOW())
 		RETURNING id, username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at
-	`, username, domain, pubkey, isFirst).Scan(
+	`, username, domain, pubkey, makePrimary, autoAssigned).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
 		&addr.Active, &addr.Verified, &addr.IsPrimary, &addr.NIP05Active,
 		&addr.CreatedAt, &addr.UpdatedAt,
@@ -650,12 +672,14 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		return nil, fmt.Errorf("open ownership: %w", err)
 	}
 
-	// Inherit LN config from primary address for aliases.
-	if !isFirst && primaryAddrID != 0 {
+	// Inherit LN config from the (former) primary when this address is NOT itself the
+	// first primary — i.e. a plain alias, or a promoted name taking over from the auto
+	// address. Keeps the wallet continuous across the anonymous→named transition.
+	if !makePrimary && primaryAddrID != 0 || promote && primaryAddrID != 0 {
 		if err := copyLightningConfig(ctx, tx, primaryAddrID, addr.ID); err != nil {
 			// Non-fatal: log but don't fail registration.
-			slog.Warn("failed to inherit lightning config for alias",
-				"primary_id", primaryAddrID, "alias_id", addr.ID, "error", err)
+			slog.Warn("failed to inherit lightning config",
+				"source_id", primaryAddrID, "dest_id", addr.ID, "error", err)
 		}
 	}
 
@@ -664,6 +688,48 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 	}
 
 	return addr, nil
+}
+
+// EnsureUser idempotently creates the platform users row for pubkey so foreign keys
+// (addresses.pubkey, user_quota_usage.pubkey, user_quotas.pubkey) hold and
+// has_service_access() — which now checks users.enabled before the free-tier
+// shortcut — doesn't lock out extension/NIP-07 users who never went through a
+// registration flow. Safe to call on every authenticated request.
+func (s *Storage) EnsureUser(ctx context.Context, pubkey string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users (pubkey) VALUES ($1)
+		ON CONFLICT (pubkey) DO NOTHING
+	`, pubkey)
+	if err != nil {
+		return fmt.Errorf("ensure user: %w", err)
+	}
+	return nil
+}
+
+// EnsureAutoAddress gives a nameless identity (one that has no active address) a
+// readable auto-assigned adjective-noun-NNNN address so email delivery and Lightning
+// zaps work at all. It is a no-op if the pubkey already has any active address. The
+// generated name uses the reserved auto-assign shape (auto_assigned=TRUE), which does
+// NOT confer the named storage tier. Best-effort: callers should treat errors as
+// non-fatal. Returns (nil, nil) when nothing was created.
+func (s *Storage) EnsureAutoAddress(ctx context.Context, pubkey, domain string) (*Address, error) {
+	var active int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses WHERE pubkey = $1 AND active = TRUE
+	`, pubkey).Scan(&active); err != nil {
+		return nil, fmt.Errorf("count addresses: %w", err)
+	}
+	if active > 0 {
+		return nil, nil
+	}
+
+	name, err := username.Generate(func(candidate string) (bool, error) {
+		return s.IsUsernameAvailable(ctx, candidate)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("generate auto address: %w", err)
+	}
+	return s.AtomicRegisterAddress(ctx, name, domain, pubkey, true)
 }
 
 // Credit operations

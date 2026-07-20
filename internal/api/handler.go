@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -83,7 +84,7 @@ func (h *Handler) Router() *gin.Engine {
 	// Authenticated API endpoints (require NIP-98)
 	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
 	authAPI := r.Group("/api/v1")
-	authAPI.Use(auth.NIP98Middleware(nip98Validator))
+	authAPI.Use(h.nip98AuthMiddleware(nip98Validator))
 	{
 		// Address management
 		authAPI.GET("/addresses/me", h.getMyAddress)
@@ -110,12 +111,55 @@ func (h *Handler) Router() *gin.Engine {
 
 		// Address verification (used by cloistr-email to verify ownership)
 		internalAPI.GET("/addresses/verify", h.verifyAddress)
+
+		// Quota check + usage recording (for services without a direct DB connection)
+		internalAPI.GET("/quotas/check", h.checkQuota)
+		internalAPI.POST("/quotas/usage", h.recordQuotaUsage)
 	}
 
 	// Admin interface (NIP-98 signed + platform-admin authorized). See admin.go.
 	h.registerAdminRoutes(r)
 
 	return r
+}
+
+// nip98AuthMiddleware authenticates the request via NIP-98 and auto-provisions the
+// caller's platform identity. Extension/NIP-07 users never go through a registration
+// flow, so without this they'd have no users row — and has_service_access() now checks
+// users.enabled before the free-tier shortcut, which would lock them out of everything.
+// EnsureUser runs synchronously (before downstream handlers, so access checks see the
+// row); the readable auto-assigned address is best-effort and runs in the background so
+// it never adds latency to or fails the request.
+func (h *Handler) nip98AuthMiddleware(validator *auth.NIP98Validator) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pubkey, err := validator.ValidateRequest(c.Request)
+		if err != nil {
+			slog.Debug("NIP-98 auth failed", "error", err, "path", c.Request.URL.Path)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":   "Authentication required",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		c.Set(auth.PubkeyContextKey, pubkey)
+
+		if err := h.store.EnsureUser(c.Request.Context(), pubkey); err != nil {
+			// Non-fatal: log and continue. A transient failure here shouldn't 500 the
+			// whole request; the row will be created on a later request.
+			slog.Warn("auto-provision users row failed", "pubkey", pubkey, "error", err)
+		}
+
+		go func(pk string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := h.store.EnsureAutoAddress(ctx, pk, h.cfg.Domain); err != nil {
+				slog.Debug("ensure auto address failed", "pubkey", pk, "error", err)
+			}
+		}(pubkey)
+
+		c.Next()
+	}
 }
 
 // loggingMiddleware logs HTTP requests

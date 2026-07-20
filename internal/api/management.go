@@ -3,12 +3,12 @@ package api
 import (
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	nameval "git.aegis-hq.xyz/coldforge/cloistr-common/username"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/nwc"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
@@ -79,16 +79,15 @@ type UpdateLightningConfigRequest struct {
 	NWCConnectionURI *string `json:"nwc_connection_uri,omitempty"` // nostr+walletconnect://...
 }
 
-var usernameRegex = regexp.MustCompile(`^[a-z0-9_-]{2,50}$`)
-
 // checkUsernameAvailability checks if a username is available
 // GET /api/v1/addresses/check/:username
 func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 	username := c.Param("username")
 	ctx := c.Request.Context()
 
-	// Validate username format
-	if !usernameRegex.MatchString(username) {
+	// Validate username format. IsValidHumanName also rejects the reserved
+	// auto-assigned shape (adjective-noun-NNNN) so it can't be squatted.
+	if !nameval.IsValidHumanName(username) {
 		c.JSON(http.StatusOK, UsernameAvailabilityResponse{
 			Username:  username,
 			Available: false,

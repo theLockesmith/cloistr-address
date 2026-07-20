@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	nameval "git.aegis-hq.xyz/coldforge/cloistr-common/username"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
@@ -76,7 +77,7 @@ func (h *Handler) getPurchaseQuote(c *gin.Context) {
 	username := req.Username
 
 	// Validate format
-	if !usernameRegex.MatchString(username) {
+	if !nameval.IsValidHumanName(username) {
 		c.JSON(http.StatusOK, PurchaseQuoteResponse{
 			Username:  username,
 			Available: false,
@@ -140,7 +141,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 	username := req.Username
 
 	// Validate format
-	if !usernameRegex.MatchString(username) {
+	if !nameval.IsValidHumanName(username) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid username format"})
 		return
 	}
@@ -197,7 +198,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		}
 
 		// Attempt registration
-		addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey)
+		addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey, false)
 		if err != nil {
 			// Refund credits on error
 			h.store.AddCredits(ctx, pubkey, creditsApplied, "purchase_failed_refund", username)

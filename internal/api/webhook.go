@@ -80,7 +80,7 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 	}
 
 	// Attempt atomic registration (race-based: first payment wins)
-	addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey)
+	addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey, false)
 	if err != nil {
 		slog.Error("failed to register address",
 			"username", username,
