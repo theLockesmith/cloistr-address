@@ -16,7 +16,18 @@ type Config struct {
 	LND           LNDConfig
 	BTCPay        BTCPayConfig
 	InternalAPI   InternalAPIConfig
+	EmailInternal EmailInternalConfig
 	NWC           NWCConfig
+}
+
+// EmailInternalConfig points at cloistr-email's internal domain-admin API.
+//
+// This is cloistr-email's OWN inbound secret, not a reuse of our InternalAPI.Secret:
+// each service has its own. Both values are required for the /admin/v1/domains
+// proxy to register; with either missing the routes stay off.
+type EmailInternalConfig struct {
+	URL    string // e.g. http://cloistr-email.cloistr.svc.cluster.local:8080
+	Secret string // Bearer token for cloistr-email's /internal/v1/domains/*
 }
 
 // NWCConfig holds Nostr Wallet Connect configuration
@@ -88,6 +99,10 @@ func Load() (*Config, error) {
 		},
 		InternalAPI: InternalAPIConfig{
 			Secret: getEnv("INTERNAL_API_SECRET", ""),
+		},
+		EmailInternal: EmailInternalConfig{
+			URL:    strings.TrimSuffix(getEnv("EMAIL_INTERNAL_URL", ""), "/"),
+			Secret: getEnv("EMAIL_INTERNAL_SECRET", ""),
 		},
 		NWC: NWCConfig{
 			EncryptionKey: getEnv("NWC_ENCRYPTION_KEY", ""),
