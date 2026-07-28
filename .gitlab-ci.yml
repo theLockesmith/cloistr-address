@@ -3,12 +3,52 @@ default:
     - local
 
 stages:
+  - test
   - build
 
 include:
   - project: 'coldforge/ci-templates'
     ref: main
     file: '/templates/kaniko-build.yml'
+
+.go-cache: &go-cache
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .go/pkg/mod/
+    policy: pull-push
+
+# bookworm + build-essential because -race needs cgo, and the alpine images
+# have no C toolchain. Matches cloistr-vault/cloistr-relay.
+test:unit:
+  stage: test
+  image: golang:1.25-bookworm
+  <<: *go-cache
+  variables:
+    GOPATH: ${CI_PROJECT_DIR}/.go
+    CGO_ENABLED: "1"
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git ca-certificates build-essential
+    - mkdir -p .go
+  script:
+    - go mod tidy
+    - go test -v -race -cover ./internal/...
+  coverage: '/coverage: \d+\.\d+% of statements/'
+
+lint:
+  stage: test
+  image: golang:1.25-bookworm
+  <<: *go-cache
+  variables:
+    GOPATH: ${CI_PROJECT_DIR}/.go
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl
+    - mkdir -p .go
+    - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.11.2
+    - go mod tidy
+  script:
+    - ${GOPATH}/bin/golangci-lint run --timeout 5m ./...
+  allow_failure: true
 
 build:
   extends: .kaniko-build
