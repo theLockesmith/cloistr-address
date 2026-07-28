@@ -70,6 +70,9 @@ func (h *Handler) registerAdminRoutes(r *gin.Engine) {
 
 		// Audit
 		admin.GET("/audit", h.adminListAudit)
+
+		// Served domains (proxied to cloistr-email; see admin_domains.go)
+		h.registerAdminDomainRoutes(admin)
 	}
 }
 
