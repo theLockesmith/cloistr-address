@@ -23,7 +23,6 @@ include:
 # bookworm + build-essential because -race needs cgo, and the alpine images
 # have no C toolchain. Matches cloistr-vault/cloistr-relay.
 
-
 build:
   extends: .kaniko-build
   stage: build
