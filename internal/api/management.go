@@ -21,7 +21,9 @@ var timeNow = time.Now
 type UsernameAvailabilityResponse struct {
 	Username  string `json:"username"`
 	Available bool   `json:"available"`
-	PriceSats int64  `json:"price_sats,omitempty"`
+	// See PurchaseQuoteResponse: omitempty drops a 0 price, and free-tier names
+	// are priced at 0, so the client cannot tell "free" from "no price returned".
+	PriceSats int64  `json:"price_sats"`
 	Tier      string `json:"tier,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
