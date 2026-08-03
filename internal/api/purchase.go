@@ -22,9 +22,16 @@ type PurchaseQuoteRequest struct {
 type PurchaseQuoteResponse struct {
 	Username  string `json:"username"`
 	Available bool   `json:"available"`
-	PriceSats int64  `json:"price_sats,omitempty"`
+	// NO omitempty on the money fields. A free-tier name is priced at 0, and
+	// omitempty drops a 0 int from the JSON entirely -- so the client received
+	// no price_sats at all and rendered `quote.price_sats?.toLocaleString()`
+	// as an empty string, showing a bare "sats" with a 0 total. A price of zero
+	// is a real answer and has to be transmitted as one; "absent" and "free"
+	// are different states and the UI cannot distinguish them otherwise.
+	// Credits gets the same treatment: 0 credits is meaningful, not missing.
+	PriceSats int64  `json:"price_sats"`
 	Tier      string `json:"tier,omitempty"`
-	Credits   int64  `json:"credits,omitempty"` // User's available credits
+	Credits   int64  `json:"credits"` // User's available credits
 }
 
 // PurchaseInvoiceRequest represents an invoice creation request
