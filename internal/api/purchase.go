@@ -190,36 +190,52 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 
 	finalPrice := price - creditsApplied
 
-	// If fully covered by credits, register immediately
+	// If fully covered by credits (or free), register immediately.
+	// creditsApplied may be zero here for a free-tier name; only call DeductCredits
+	// when there is actually something to deduct — an UPDATE…RETURNING with amount=0
+	// against a pubkey that has no pubkey_credits row returns sql.ErrNoRows, which
+	// DeductCredits maps to ErrInsufficientCredits, incorrectly blocking registration.
 	if finalPrice == 0 {
-		// Deduct credits first
-		err = h.store.DeductCredits(ctx, pubkey, creditsApplied, "purchase_full", username)
-		if err != nil {
-			if errors.Is(err, storage.ErrInsufficientCredits) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient credits"})
+		if creditsApplied > 0 {
+			// Deduct credits before registering so the balance can't be double-spent.
+			err = h.store.DeductCredits(ctx, pubkey, creditsApplied, "purchase_full", username)
+			if err != nil {
+				if errors.Is(err, storage.ErrInsufficientCredits) {
+					credits, _ := h.store.GetCredits(ctx, pubkey)
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error":          "Insufficient credits",
+						"available_sats": credits,
+						"required_sats":  creditsApplied,
+					})
+					return
+				}
+				slog.Error("failed to deduct credits", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 				return
 			}
-			slog.Error("failed to deduct credits", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
-			return
 		}
 
 		// Attempt registration
 		addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey, false)
 		if err != nil {
-			// Refund credits on error
-			h.store.AddCredits(ctx, pubkey, creditsApplied, "purchase_failed_refund", username)
+			if creditsApplied > 0 {
+				// Refund credits only if we actually deducted some.
+				h.store.AddCredits(ctx, pubkey, creditsApplied, "purchase_failed_refund", username)
+			}
 			slog.Error("failed to register address", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 			return
 		}
 		if addr == nil {
-			// Username was taken, refund credits
-			h.store.AddCredits(ctx, pubkey, creditsApplied, "username_taken_refund", username)
-			c.JSON(http.StatusConflict, gin.H{
-				"error":   "Username was taken",
-				"message": "Credits have been refunded to your account",
-			})
+			// Username was taken in a race; refund any credits that were deducted.
+			if creditsApplied > 0 {
+				h.store.AddCredits(ctx, pubkey, creditsApplied, "username_taken_refund", username)
+			}
+			resp := gin.H{"error": "Username was taken"}
+			if creditsApplied > 0 {
+				resp["message"] = "Credits have been refunded to your account"
+			}
+			c.JSON(http.StatusConflict, resp)
 			return
 		}
 

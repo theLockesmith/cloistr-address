@@ -785,9 +785,13 @@ func (s *Storage) AddCredits(ctx context.Context, pubkey string, amountSats int6
 	return nil
 }
 
-// DeductCredits deducts credits from a pubkey if sufficient balance
-// Returns error if insufficient balance
+// DeductCredits deducts credits from a pubkey if sufficient balance.
+// Returns ErrInsufficientCredits when the balance is too low.
+// amountSats == 0 is a no-op (always succeeds, never creates a history entry).
 func (s *Storage) DeductCredits(ctx context.Context, pubkey string, amountSats int64, reason, referenceID string) error {
+	if amountSats == 0 {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
