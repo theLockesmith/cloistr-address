@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	git.aegis-hq.xyz/coldforge/cloistr-common v0.3.0
 	github.com/gin-gonic/gin v1.10.0
-	github.com/lib/pq v1.11.1
+	github.com/lib/pq v1.12.3
 	github.com/nbd-wtf/go-nostr v0.52.3
 	github.com/prometheus/client_golang v1.24.1
 )
