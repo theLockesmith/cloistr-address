@@ -112,20 +112,26 @@ func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 	}
 
 	if available {
-		// Get pricing info
+		// A lookup failure must NOT fall through as price_sats: 0. Zero is a real,
+		// meaningful price here — 6+ character names are free by design — so a
+		// swallowed error renders in the UI as "Free" and the user only discovers
+		// otherwise when the purchase fails. Refusing the quote is honest; a
+		// confident wrong number is not.
 		price, err := h.store.GetUsernamePrice(ctx, len(username))
 		if err != nil {
-			slog.Warn("failed to get username price", "username", username, "error", err)
-		} else {
-			response.PriceSats = price
+			slog.Error("failed to get username price", "username", username, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
+			return
 		}
+		response.PriceSats = price
 
 		tier, err := h.store.GetUsernameTier(ctx, len(username))
 		if err != nil {
-			slog.Warn("failed to get username tier", "username", username, "error", err)
-		} else {
-			response.Tier = tier
+			slog.Error("failed to get username tier", "username", username, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
+			return
 		}
+		response.Tier = tier
 	} else {
 		response.Reason = "Username is not available"
 	}

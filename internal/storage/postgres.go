@@ -1109,3 +1109,13 @@ func copyLightningConfig(ctx context.Context, tx *sql.Tx, fromAddressID, toAddre
 var (
 	ErrInsufficientCredits = fmt.Errorf("insufficient credits")
 )
+
+// NewWithDB wraps an existing *sql.DB.
+//
+// Exists for tests: New() dials a real Postgres, which makes the "what does the
+// handler do when a query FAILS" cases untestable — and those are exactly the
+// cases that shipped wrong (a failed price lookup was reported to the user as
+// price_sats: 0, i.e. "free").
+func NewWithDB(db *sql.DB) *Storage {
+	return &Storage{db: db}
+}
