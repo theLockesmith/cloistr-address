@@ -33,7 +33,7 @@ func testStore(t *testing.T) (*Storage, func()) {
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping db: %v", err)
 	}
-	return &Storage{db: db}, func() { db.Close() }
+	return &Storage{db: db}, func() { _ = db.Close() }
 }
 
 func randPubkey(t *testing.T) string {

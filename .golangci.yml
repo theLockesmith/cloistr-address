@@ -1,0 +1,30 @@
+# golangci-lint v2 config. The shared .go-lint job (coldforge/ci-templates,
+# templates/go-test.yml) runs `golangci-lint run ./...` with no -c, so this file
+# is picked up by auto-discovery.
+#
+# WHY THIS EXISTS
+#
+# The lint job reported 19 errcheck issues and has been red on master long
+# enough to stop being read. Ten of those were deferred cleanup calls that no
+# caller can act on; the other nine were real — three ignored credit REFUNDS,
+# one of which told the user "Credits have been refunded" whether or not the
+# write succeeded. Those are fixed in code.
+#
+# What remains excluded here is only the cleanup set, named function by
+# function. A blanket `errcheck: false` would have hidden the refund bug, which
+# is exactly what "just turn the linter off" costs.
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # Deferred rollback after a committed tx returns ErrTxDone by design.
+        - (*database/sql.Tx).Rollback
+        # Rows.Close after a completed scan reports the same error the scan
+        # already surfaced.
+        - (*database/sql.Rows).Close
+        # Response bodies are drained-and-closed in defers; a close error means
+        # the connection is already gone and the request has its own error path.
+        - (io.ReadCloser).Close
+        - (io.Closer).Close

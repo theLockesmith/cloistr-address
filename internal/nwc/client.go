@@ -25,12 +25,12 @@ const (
 
 // Common errors
 var (
-	ErrInvalidURI      = errors.New("invalid NWC connection URI")
-	ErrTimeout         = errors.New("NWC request timeout")
-	ErrNoResponse      = errors.New("no response from wallet")
-	ErrWalletError     = errors.New("wallet returned error")
-	ErrEncryption      = errors.New("encryption/decryption failed")
-	ErrNotConnected    = errors.New("not connected to relay")
+	ErrInvalidURI   = errors.New("invalid NWC connection URI")
+	ErrTimeout      = errors.New("NWC request timeout")
+	ErrNoResponse   = errors.New("no response from wallet")
+	ErrWalletError  = errors.New("wallet returned error")
+	ErrEncryption   = errors.New("encryption/decryption failed")
+	ErrNotConnected = errors.New("not connected to relay")
 )
 
 // ConnectionConfig holds parsed NWC connection details
@@ -51,9 +51,9 @@ type Client struct {
 
 // MakeInvoiceRequest represents a make_invoice request
 type MakeInvoiceRequest struct {
-	Amount      int64  `json:"amount"`                 // Amount in millisatoshis
-	Description string `json:"description,omitempty"`  // Invoice description
-	Expiry      int64  `json:"expiry,omitempty"`       // Invoice expiry in seconds
+	Amount      int64  `json:"amount"`                // Amount in millisatoshis
+	Description string `json:"description,omitempty"` // Invoice description
+	Expiry      int64  `json:"expiry,omitempty"`      // Invoice expiry in seconds
 }
 
 // MakeInvoiceResponse represents a make_invoice response
@@ -166,7 +166,9 @@ func (c *Client) Connect(ctx context.Context) error {
 // Close closes the relay connection
 func (c *Client) Close() {
 	if c.relay != nil {
-		c.relay.Close()
+		// Close() has no error to return to its caller, and a failed close on a
+		// relay we are done with changes nothing.
+		_ = c.relay.Close()
 	}
 }
 

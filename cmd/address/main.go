@@ -37,7 +37,9 @@ func main() {
 		slog.Error("failed to initialize storage", "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	// Closing the pool on the way out has nothing to report to: the process is
+	// exiting either way.
+	defer func() { _ = store.Close() }()
 
 	// Initialize metrics
 	metrics.Init()

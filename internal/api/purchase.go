@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -219,8 +220,10 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey, false)
 		if err != nil {
 			if creditsApplied > 0 {
-				// Refund credits only if we actually deducted some.
-				h.store.AddCredits(ctx, pubkey, creditsApplied, "purchase_failed_refund", username)
+				// Refund credits only if we actually deducted some. A failed
+				// refund silently costs the user sats, so it is logged at ERROR
+				// with everything needed to replay it by hand.
+				refund(ctx, h, pubkey, creditsApplied, "purchase_failed_refund", username)
 			}
 			slog.Error("failed to register address", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
@@ -228,12 +231,20 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		}
 		if addr == nil {
 			// Username was taken in a race; refund any credits that were deducted.
+			refunded := true
 			if creditsApplied > 0 {
-				h.store.AddCredits(ctx, pubkey, creditsApplied, "username_taken_refund", username)
+				refunded = refund(ctx, h, pubkey, creditsApplied, "username_taken_refund", username)
 			}
 			resp := gin.H{"error": "Username was taken"}
 			if creditsApplied > 0 {
-				resp["message"] = "Credits have been refunded to your account"
+				// Only claim the refund when it actually landed. Telling a user
+				// their credits are back when the write failed is worse than
+				// telling them nothing.
+				if refunded {
+					resp["message"] = "Credits have been refunded to your account"
+				} else {
+					resp["message"] = "Your credits could not be refunded automatically — please contact support"
+				}
 			}
 			c.JSON(http.StatusConflict, resp)
 			return
@@ -271,7 +282,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		slog.Error("BTCPay not configured")
 		// Refund any deducted credits
 		if creditsApplied > 0 {
-			h.store.AddCredits(ctx, pubkey, creditsApplied, "btcpay_unavailable_refund", username)
+			refund(ctx, h, pubkey, creditsApplied, "btcpay_unavailable_refund", username)
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Payment system unavailable"})
 		return
@@ -295,7 +306,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		)
 		// Refund any deducted credits
 		if creditsApplied > 0 {
-			h.store.AddCredits(ctx, pubkey, creditsApplied, "invoice_creation_failed_refund", username)
+			refund(ctx, h, pubkey, creditsApplied, "invoice_creation_failed_refund", username)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invoice"})
 		return
@@ -387,9 +398,9 @@ func (h *Handler) withdrawCredits(c *gin.Context) {
 		if errors.Is(err, storage.ErrInsufficientCredits) {
 			credits, _ := h.store.GetCredits(ctx, pubkey)
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error":           "Insufficient credits",
-				"available_sats":  credits,
-				"requested_sats":  req.AmountSats,
+				"error":          "Insufficient credits",
+				"available_sats": credits,
+				"requested_sats": req.AmountSats,
 			})
 			return
 		}
@@ -416,4 +427,23 @@ func (h *Handler) withdrawCredits(c *gin.Context) {
 	})
 }
 
-
+// refund returns credits that were deducted for a purchase that then failed.
+//
+// It reports whether the credits actually went back. Every call site used to
+// ignore the error, so a failed refund left the user short with nothing in the
+// logs to reconcile from — and one of them told the user "Credits have been
+// refunded" regardless. The ERROR line carries enough to replay the credit by
+// hand.
+func refund(ctx context.Context, h *Handler, pubkey string, amount int64, reason, username string) bool {
+	if err := h.store.AddCredits(ctx, pubkey, amount, reason, username); err != nil {
+		slog.Error("REFUND FAILED - credits owed to user",
+			"pubkey", pubkey,
+			"amount_sats", amount,
+			"reason", reason,
+			"username", username,
+			"error", err,
+		)
+		return false
+	}
+	return true
+}

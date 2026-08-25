@@ -19,21 +19,21 @@ import (
 
 // LNURLPConfigResponse represents the LNURL-pay initial response
 type LNURLPConfigResponse struct {
-	Tag             string `json:"tag"`
-	Callback        string `json:"callback"`
-	MinSendable     int64  `json:"minSendable"`     // millisatoshis
-	MaxSendable     int64  `json:"maxSendable"`     // millisatoshis
-	Metadata        string `json:"metadata"`        // JSON array of [type, content]
-	CommentAllowed  int    `json:"commentAllowed"`  // max comment length
-	AllowsNostr     bool   `json:"allowsNostr"`     // NIP-57 zap support
-	NostrPubkey     string `json:"nostrPubkey,omitempty"`
+	Tag            string `json:"tag"`
+	Callback       string `json:"callback"`
+	MinSendable    int64  `json:"minSendable"`    // millisatoshis
+	MaxSendable    int64  `json:"maxSendable"`    // millisatoshis
+	Metadata       string `json:"metadata"`       // JSON array of [type, content]
+	CommentAllowed int    `json:"commentAllowed"` // max comment length
+	AllowsNostr    bool   `json:"allowsNostr"`    // NIP-57 zap support
+	NostrPubkey    string `json:"nostrPubkey,omitempty"`
 }
 
 // LNURLPCallbackResponse represents the invoice response
 type LNURLPCallbackResponse struct {
-	PR            string          `json:"pr"`                      // BOLT11 invoice
-	Routes        []interface{}   `json:"routes"`                  // routing hints
-	SuccessAction *SuccessAction  `json:"successAction,omitempty"` // optional success action
+	PR            string         `json:"pr"`                      // BOLT11 invoice
+	Routes        []interface{}  `json:"routes"`                  // routing hints
+	SuccessAction *SuccessAction `json:"successAction,omitempty"` // optional success action
 }
 
 // SuccessAction represents post-payment action
@@ -427,8 +427,12 @@ func (h *Handler) handleNWCInvoice(c *gin.Context, ctx context.Context, lnConfig
 		slog.Error("NWC make_invoice failed", "username", username, "error", err)
 		metrics.LNURLRequests.WithLabelValues("callback", "nwc_error").Inc()
 
-		// Update error tracking in database
-		h.store.UpdateNWCError(ctx, lnConfig.AddressID, err.Error())
+		// Update error tracking in database. Best-effort: the user already gets
+		// an error response either way, but a failure here means the wallet's
+		// health history is wrong, which is worth a log line.
+		if uerr := h.store.UpdateNWCError(ctx, lnConfig.AddressID, err.Error()); uerr != nil {
+			slog.Warn("failed to record NWC error", "address_id", lnConfig.AddressID, "error", uerr)
+		}
 
 		c.JSON(http.StatusOK, LNURLErrorResponse{
 			Status: "ERROR",
@@ -437,8 +441,10 @@ func (h *Handler) handleNWCInvoice(c *gin.Context, ctx context.Context, lnConfig
 		return
 	}
 
-	// Update success tracking
-	h.store.UpdateNWCSuccess(ctx, lnConfig.AddressID)
+	// Update success tracking (best-effort, same reasoning as the error path).
+	if uerr := h.store.UpdateNWCSuccess(ctx, lnConfig.AddressID); uerr != nil {
+		slog.Warn("failed to record NWC success", "address_id", lnConfig.AddressID, "error", uerr)
+	}
 
 	slog.Info("NWC invoice generated",
 		"username", username,
