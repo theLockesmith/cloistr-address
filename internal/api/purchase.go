@@ -106,22 +106,27 @@ func (h *Handler) getPurchaseQuote(c *gin.Context) {
 	}
 
 	if available {
-		// Get pricing
+		// Same rule as the availability endpoint: a swallowed lookup error would
+		// quote price_sats: 0, which is indistinguishable from a genuinely free
+		// name and sends the user to a "Claim Free" button that cannot work.
 		price, err := h.store.GetUsernamePrice(ctx, len(username))
 		if err != nil {
 			slog.Error("failed to get price", "error", err)
-		} else {
-			response.PriceSats = price
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
+			return
 		}
+		response.PriceSats = price
 
 		tier, err := h.store.GetUsernameTier(ctx, len(username))
 		if err != nil {
 			slog.Error("failed to get tier", "error", err)
-		} else {
-			response.Tier = tier
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
+			return
 		}
+		response.Tier = tier
 
-		// Get user's credits
+		// Credits are additive: failing to read them understates the discount but
+		// never overstates what the user owes, so this one stays non-fatal.
 		credits, err := h.store.GetCredits(ctx, pubkey)
 		if err != nil {
 			slog.Error("failed to get credits", "error", err)
