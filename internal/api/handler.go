@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -161,16 +162,45 @@ func (h *Handler) nip98AuthMiddleware(validator *auth.NIP98Validator) gin.Handle
 			slog.Warn("auto-provision users row failed", "pubkey", pubkey, "error", err)
 		}
 
-		go func(pk string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if _, err := h.store.EnsureAutoAddress(ctx, pk, h.cfg.Domain); err != nil {
-				slog.Debug("ensure auto address failed", "pubkey", pk, "error", err)
-			}
-		}(pubkey)
+		// A user who is CLAIMING a name is not a nameless identity, so do not hand
+		// them a throwaway one on the way past.
+		//
+		// The signup flow is: unauthenticated availability check, then an
+		// authenticated POST /purchase/quote, then POST /purchase/invoice. That
+		// middle call used to provision an adjective-noun-NNNN address seconds
+		// before the real claim, and AtomicRegisterAddress would then promote the
+		// claimed name and KEEP the auto one as a permanent alias. Every user
+		// registering through the purchase screen would end up with a spare
+		// address they never asked for, and a name burned out of the namespace.
+		//
+		// Nobody has hit it in production yet (auto-provisioning landed
+		// 2026-07-20, after the only claimed name), so this is closed before it
+		// can produce its first instance rather than after.
+		//
+		// The address still gets provisioned on every other authenticated path,
+		// which is what keeps mail delivery and zaps working for an identity that
+		// never claims a name.
+		if !isNameClaimPath(c.Request.URL.Path) {
+			go func(pk string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := h.store.EnsureAutoAddress(ctx, pk, h.cfg.Domain); err != nil {
+					slog.Debug("ensure auto address failed", "pubkey", pk, "error", err)
+				}
+			}(pubkey)
+		}
 
 		c.Next()
 	}
+}
+
+// isNameClaimPath reports whether a request is part of claiming a name.
+//
+// Deliberately a suffix match on the two purchase endpoints rather than a
+// prefix on /purchase: a future /purchase/... route that is NOT a claim should
+// have to opt in here, instead of silently inheriting the skip.
+func isNameClaimPath(path string) bool {
+	return strings.HasSuffix(path, "/purchase/quote") || strings.HasSuffix(path, "/purchase/invoice")
 }
 
 // optionalNIP98Middleware identifies the caller when it can, and never rejects.
