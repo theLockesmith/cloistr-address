@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
 	"time"
 
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
@@ -20,6 +18,17 @@ const (
 	MetaPubkey    = "pubkey"     // who gets the thing
 	MetaProductID = "product_id" // product purchases
 )
+
+// QuotaExpiresDaysKey is a RESERVED key inside a product's
+// grants_quota_increases payload. It carries the grant window in days and is
+// NOT a quota type — settleProduct must skip it when creating grants, or a
+// storage top-up would also grant 30 bytes of "expires_days".
+//
+// It lives in the payload because products.billing_period cannot hold it: the
+// table's check constraint requires billing_period IS NULL for one_time
+// products, and these top-ups are one_time by design. Migration 009 tried
+// billing_period first and failed on every pod start.
+const QuotaExpiresDaysKey = "expires_days"
 
 // Settlement kinds.
 const (
@@ -60,24 +69,20 @@ func settlementKind(meta map[string]any) string {
 	return ""
 }
 
-// grantWindow converts a product's billing_period into an expiry.
+// grantWindow converts a product's grant window into an expiry.
 //
-// Returns nil for a permanent grant. An unparseable period is an ERROR, not a
+// Returns nil for a permanent grant. An unparseable window is an ERROR, not a
 // silent "permanent": quietly granting 100 GiB forever because someone typed
-// "30 days" instead of "30d" is the expensive direction to be wrong in.
-func grantWindow(now time.Time, billingPeriod string) (*time.Time, error) {
-	p := strings.TrimSpace(billingPeriod)
-	if p == "" {
+// "thirty" is the expensive direction to be wrong in.
+func grantWindow(now time.Time, quotas map[string]int64) (*time.Time, error) {
+	days, ok := quotas[QuotaExpiresDaysKey]
+	if !ok {
 		return nil, nil
 	}
-	if !strings.HasSuffix(p, "d") {
-		return nil, fmt.Errorf("unsupported billing_period %q (expected e.g. \"30d\")", billingPeriod)
+	if days <= 0 {
+		return nil, fmt.Errorf("%s must be a positive number of days, got %d", QuotaExpiresDaysKey, days)
 	}
-	days, err := strconv.Atoi(strings.TrimSuffix(p, "d"))
-	if err != nil || days <= 0 {
-		return nil, fmt.Errorf("unsupported billing_period %q (expected e.g. \"30d\")", billingPeriod)
-	}
-	t := now.AddDate(0, 0, days)
+	t := now.AddDate(0, 0, int(days))
 	return &t, nil
 }
 
@@ -109,17 +114,25 @@ func (h *Handler) settleProduct(ctx context.Context, invoiceID, pubkey, productI
 		return SettlementOutcome{}, fmt.Errorf("product %q grants no quota; nothing to settle", productID)
 	}
 
-	expiresAt, err := grantWindow(now, product.BillingPeriod)
+	expiresAt, err := grantWindow(now, product.GrantsQuotaIncreases)
 	if err != nil {
 		return SettlementOutcome{}, fmt.Errorf("product %q: %w", productID, err)
 	}
 
 	granted := map[string]any{}
 	for quotaType, bytes := range product.GrantsQuotaIncreases {
+		// Reserved: the window, not a quota. Granting it would hand the user
+		// 30 bytes of a quota type called "expires_days".
+		if quotaType == QuotaExpiresDaysKey {
+			continue
+		}
 		if err := h.store.AddQuotaGrant(ctx, pubkey, quotaType, bytes, "purchase", invoiceID, expiresAt); err != nil {
 			return SettlementOutcome{}, err
 		}
 		granted[quotaType] = bytes
+	}
+	if len(granted) == 0 {
+		return SettlementOutcome{}, fmt.Errorf("product %q grants only %s and no actual quota", productID, QuotaExpiresDaysKey)
 	}
 
 	slog.Info("product settled",

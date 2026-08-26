@@ -33,5 +33,12 @@ test:unit:
   variables:
     GO_TEST_PACKAGES: "./internal/..."
 
+# 25m, not the template's 15m default. golangci-lint analysed this module
+# cleanly ("0 issues.") and then exited 1 on "Timeout exceeded" at 15m52s
+# (pipeline 27356) — the deadline killed it AFTER the work was done, turning a
+# clean lint into a red job. The module has not grown; the shared runner is
+# slow under load. Raise the deadline rather than lose the signal.
 lint:
   extends: [.go-lint, .cloistr-rules]
+  variables:
+    GOLANGCI_TIMEOUT: "25m"
