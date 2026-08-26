@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -71,18 +72,29 @@ func (h *Handler) Router() *gin.Engine {
 	r.GET("/.well-known/lnurlp/:username", h.handleLNURLPConfig)
 	r.GET("/.well-known/lnurlp/:username/callback", h.handleLNURLPCallback)
 
+	// One validator, shared by the required-auth middleware below and the
+	// OPTIONAL one on the availability check.
+	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
+
 	// Public API endpoints
 	api := r.Group("/api/v1")
 	{
-		// Address availability check (public)
-		api.GET("/addresses/check/:username", h.checkUsernameAvailability)
+		// Address availability check (public, but auth-AWARE).
+		//
+		// It stays open to anonymous callers — the signup page needs it before
+		// anyone has signed in. But when the caller DOES present a valid NIP-98
+		// header we price for them, because "one free name per account" cannot
+		// be answered without knowing the account: a signed-in user who already
+		// has a name was being told a second one was Free and then charged at
+		// the quote.
+		api.GET("/addresses/check/:username",
+			h.optionalNIP98Middleware(nip98Validator), h.checkUsernameAvailability)
 
 		// BTCPay webhook (no auth - signature verified in handler)
 		api.POST("/webhook/payment", h.handleBTCPayWebhook)
 	}
 
 	// Authenticated API endpoints (require NIP-98)
-	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
 	authAPI := r.Group("/api/v1")
 	authAPI.Use(h.nip98AuthMiddleware(nip98Validator))
 	{
@@ -150,14 +162,59 @@ func (h *Handler) nip98AuthMiddleware(validator *auth.NIP98Validator) gin.Handle
 			slog.Warn("auto-provision users row failed", "pubkey", pubkey, "error", err)
 		}
 
-		go func(pk string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if _, err := h.store.EnsureAutoAddress(ctx, pk, h.cfg.Domain); err != nil {
-				slog.Debug("ensure auto address failed", "pubkey", pk, "error", err)
-			}
-		}(pubkey)
+		// A user who is CLAIMING a name is not a nameless identity, so do not hand
+		// them a throwaway one on the way past.
+		//
+		// The signup flow is: unauthenticated availability check, then an
+		// authenticated POST /purchase/quote, then POST /purchase/invoice. That
+		// middle call used to provision an adjective-noun-NNNN address seconds
+		// before the real claim, and AtomicRegisterAddress would then promote the
+		// claimed name and KEEP the auto one as a permanent alias. Every user
+		// registering through the purchase screen would end up with a spare
+		// address they never asked for, and a name burned out of the namespace.
+		//
+		// Nobody has hit it in production yet (auto-provisioning landed
+		// 2026-07-20, after the only claimed name), so this is closed before it
+		// can produce its first instance rather than after.
+		//
+		// The address still gets provisioned on every other authenticated path,
+		// which is what keeps mail delivery and zaps working for an identity that
+		// never claims a name.
+		if !isNameClaimPath(c.Request.URL.Path) {
+			go func(pk string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := h.store.EnsureAutoAddress(ctx, pk, h.cfg.Domain); err != nil {
+					slog.Debug("ensure auto address failed", "pubkey", pk, "error", err)
+				}
+			}(pubkey)
+		}
 
+		c.Next()
+	}
+}
+
+// isNameClaimPath reports whether a request is part of claiming a name.
+//
+// Deliberately a suffix match on the two purchase endpoints rather than a
+// prefix on /purchase: a future /purchase/... route that is NOT a claim should
+// have to opt in here, instead of silently inheriting the skip.
+func isNameClaimPath(path string) bool {
+	return strings.HasSuffix(path, "/purchase/quote") || strings.HasSuffix(path, "/purchase/invoice")
+}
+
+// optionalNIP98Middleware identifies the caller when it can, and never rejects.
+//
+// Unlike nip98AuthMiddleware it does not 401: an absent or invalid header simply
+// leaves the pubkey unset and the handler answers anonymously. It also does NOT
+// auto-provision a user or an auto address — a price check is not a sign-up, and
+// creating rows for anyone who types a name into the availability box would hand
+// out an address per curious visitor.
+func (h *Handler) optionalNIP98Middleware(validator *auth.NIP98Validator) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if pubkey, err := validator.ValidateRequest(c.Request); err == nil {
+			c.Set(auth.PubkeyContextKey, pubkey)
+		}
 		c.Next()
 	}
 }

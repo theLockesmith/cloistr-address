@@ -25,7 +25,10 @@ type UsernameAvailabilityResponse struct {
 	// are priced at 0, so the client cannot tell "free" from "no price returned".
 	PriceSats int64  `json:"price_sats"`
 	Tier      string `json:"tier,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	// Additional is true when the caller is signed in and has already claimed
+	// their one free name, so this normally-free name carries a price.
+	Additional bool   `json:"additional"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // AddressEntry is a compact per-address entry in the /addresses/me response.
@@ -112,26 +115,26 @@ func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 	}
 
 	if available {
-		// A lookup failure must NOT fall through as price_sats: 0. Zero is a real,
-		// meaningful price here — 6+ character names are free by design — so a
-		// swallowed error renders in the UI as "Free" and the user only discovers
-		// otherwise when the purchase fails. Refusing the quote is honest; a
-		// confident wrong number is not.
-		price, err := h.store.GetUsernamePrice(ctx, len(username))
+		// Priced for the CALLER when we know who they are. This endpoint is open
+		// to anonymous visitors, and optionalNIP98Middleware fills the pubkey in
+		// only when a valid header is present — so a signed-in user who already
+		// holds a name is quoted the additional-address price here instead of
+		// being shown "Free" and charged at the quote a screen later.
+		//
+		// A lookup failure must NOT fall through as price_sats: 0. Zero is a
+		// real, meaningful price here — the first 6+ character name is free by
+		// design — so a swallowed error renders in the UI as "Free" and the user
+		// only discovers otherwise when the purchase fails. Refusing the quote is
+		// honest; a confident wrong number is not.
+		priced, err := h.priceNameFor(ctx, username, auth.GetPubkey(c))
 		if err != nil {
-			slog.Error("failed to get username price", "username", username, "error", err)
+			slog.Error("failed to price username", "username", username, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 			return
 		}
-		response.PriceSats = price
-
-		tier, err := h.store.GetUsernameTier(ctx, len(username))
-		if err != nil {
-			slog.Error("failed to get username tier", "username", username, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
-			return
-		}
-		response.Tier = tier
+		response.PriceSats = priced.PriceSats
+		response.Tier = priced.Tier
+		response.Additional = priced.Additional
 	} else {
 		response.Reason = "Username is not available"
 	}
