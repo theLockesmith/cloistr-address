@@ -32,7 +32,7 @@ func priceHandler(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	if err != nil {
 		t.Fatalf("sqlmock: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	gin.SetMode(gin.TestMode)
 	h := &Handler{cfg: &config.Config{}, store: storage.NewWithDB(db)}

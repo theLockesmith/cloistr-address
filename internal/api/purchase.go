@@ -33,6 +33,11 @@ type PurchaseQuoteResponse struct {
 	PriceSats int64  `json:"price_sats"`
 	Tier      string `json:"tier,omitempty"`
 	Credits   int64  `json:"credits"` // User's available credits
+	// Additional is true when this account has already claimed its one free
+	// name, so a normally-free name is being charged the additional-address
+	// price. The UI needs this to explain the charge; without it the user just
+	// sees a number where they expected "Free".
+	Additional bool `json:"additional"`
 }
 
 // PurchaseInvoiceRequest represents an invoice creation request
@@ -107,24 +112,20 @@ func (h *Handler) getPurchaseQuote(c *gin.Context) {
 	}
 
 	if available {
-		// Same rule as the availability endpoint: a swallowed lookup error would
-		// quote price_sats: 0, which is indistinguishable from a genuinely free
-		// name and sends the user to a "Claim Free" button that cannot work.
-		price, err := h.store.GetUsernamePrice(ctx, len(username))
+		// Priced FOR THIS PUBKEY: one free real name per account, so a free-tier
+		// name costs the additional-address price once the account has claimed
+		// one. A swallowed lookup error would quote price_sats: 0, which is
+		// indistinguishable from a genuinely free name and sends the user to a
+		// "Claim Free" button that cannot work.
+		priced, err := h.priceNameFor(ctx, username, pubkey)
 		if err != nil {
-			slog.Error("failed to get price", "error", err)
+			slog.Error("failed to price name", "username", username, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 			return
 		}
-		response.PriceSats = price
-
-		tier, err := h.store.GetUsernameTier(ctx, len(username))
-		if err != nil {
-			slog.Error("failed to get tier", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
-			return
-		}
-		response.Tier = tier
+		response.PriceSats = priced.PriceSats
+		response.Tier = priced.Tier
+		response.Additional = priced.Additional
 
 		// Credits are additive: failing to read them understates the discount but
 		// never overstates what the user owes, so this one stays non-fatal.
@@ -171,13 +172,16 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		return
 	}
 
-	// Get price
-	price, err := h.store.GetUsernamePrice(ctx, len(username))
+	// Price for THIS pubkey, matching the quote: the first real name on an
+	// account is free, later ones are not. Charging off the length-only tier
+	// here would hand out unlimited free names no matter what the quote said.
+	priced, err := h.priceNameFor(ctx, username, pubkey)
 	if err != nil {
-		slog.Error("failed to get price", "username", username, "error", err)
+		slog.Error("failed to price name", "username", username, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
 		return
 	}
+	price := priced.PriceSats
 
 	// Apply credits if requested
 	var creditsApplied int64

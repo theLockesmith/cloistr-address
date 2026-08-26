@@ -350,6 +350,42 @@ func (s *Storage) GetUsernamePrice(ctx context.Context, usernameLength int) (int
 	return price, nil
 }
 
+// CountRealAddresses returns how many CLAIMED addresses a pubkey holds.
+//
+// "Real" excludes auto_assigned: the NIP-98 middleware hands every authenticated
+// pubkey an adjective-noun-NNNN address, and that must not consume the one free
+// name. Migration 007 drew the same line for quota tiers, and
+// AtomicRegisterAddress already uses it to decide primary promotion.
+func (s *Storage) CountRealAddresses(ctx context.Context, pubkey string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM addresses
+		WHERE pubkey = $1 AND active = TRUE AND COALESCE(auto_assigned, FALSE) = FALSE
+	`, pubkey).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count real addresses: %w", err)
+	}
+	return n, nil
+}
+
+// GetProductPriceSats reads a one-time product's price from the catalog.
+//
+// Returns ErrProductNotFound when the row is absent, so a caller can tell "this
+// product is not configured" from "this product is free" — the same distinction
+// that made a failed price lookup render as "Free" on the signup page.
+func (s *Storage) GetProductPriceSats(ctx context.Context, productID string) (int64, error) {
+	var price int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT price_sats FROM products WHERE id = $1`, productID).Scan(&price)
+	if err == sql.ErrNoRows {
+		return 0, ErrProductNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get product price: %w", err)
+	}
+	return price, nil
+}
+
 // GetUsernameTier returns the tier name for a given username length
 func (s *Storage) GetUsernameTier(ctx context.Context, usernameLength int) (string, error) {
 	var tierName string
@@ -1108,6 +1144,7 @@ func copyLightningConfig(ctx context.Context, tx *sql.Tx, fromAddressID, toAddre
 // Error definitions
 var (
 	ErrInsufficientCredits = fmt.Errorf("insufficient credits")
+	ErrProductNotFound     = fmt.Errorf("product not found")
 )
 
 // NewWithDB wraps an existing *sql.DB.

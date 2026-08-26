@@ -71,18 +71,29 @@ func (h *Handler) Router() *gin.Engine {
 	r.GET("/.well-known/lnurlp/:username", h.handleLNURLPConfig)
 	r.GET("/.well-known/lnurlp/:username/callback", h.handleLNURLPCallback)
 
+	// One validator, shared by the required-auth middleware below and the
+	// OPTIONAL one on the availability check.
+	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
+
 	// Public API endpoints
 	api := r.Group("/api/v1")
 	{
-		// Address availability check (public)
-		api.GET("/addresses/check/:username", h.checkUsernameAvailability)
+		// Address availability check (public, but auth-AWARE).
+		//
+		// It stays open to anonymous callers — the signup page needs it before
+		// anyone has signed in. But when the caller DOES present a valid NIP-98
+		// header we price for them, because "one free name per account" cannot
+		// be answered without knowing the account: a signed-in user who already
+		// has a name was being told a second one was Free and then charged at
+		// the quote.
+		api.GET("/addresses/check/:username",
+			h.optionalNIP98Middleware(nip98Validator), h.checkUsernameAvailability)
 
 		// BTCPay webhook (no auth - signature verified in handler)
 		api.POST("/webhook/payment", h.handleBTCPayWebhook)
 	}
 
 	// Authenticated API endpoints (require NIP-98)
-	nip98Validator := auth.NewNIP98Validator(auth.DefaultNIP98Config())
 	authAPI := r.Group("/api/v1")
 	authAPI.Use(h.nip98AuthMiddleware(nip98Validator))
 	{
@@ -158,6 +169,22 @@ func (h *Handler) nip98AuthMiddleware(validator *auth.NIP98Validator) gin.Handle
 			}
 		}(pubkey)
 
+		c.Next()
+	}
+}
+
+// optionalNIP98Middleware identifies the caller when it can, and never rejects.
+//
+// Unlike nip98AuthMiddleware it does not 401: an absent or invalid header simply
+// leaves the pubkey unset and the handler answers anonymously. It also does NOT
+// auto-provision a user or an auto address — a price check is not a sign-up, and
+// creating rows for anyone who types a name into the availability box would hand
+// out an address per curious visitor.
+func (h *Handler) optionalNIP98Middleware(validator *auth.NIP98Validator) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if pubkey, err := validator.ValidateRequest(c.Request); err == nil {
+			c.Set(auth.PubkeyContextKey, pubkey)
+		}
 		c.Next()
 	}
 }
