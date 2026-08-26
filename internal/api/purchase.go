@@ -299,8 +299,11 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 
 	// Create BTCPay invoice with metadata for webhook processing
 	metadata := map[string]interface{}{
-		"username":        username,
-		"pubkey":          pubkey,
+		// Tagged explicitly. settlementKind() still infers "address" from a bare
+		// username so invoices minted before this key existed keep settling.
+		MetaKind:          KindAddress,
+		MetaUsername:      username,
+		MetaPubkey:        pubkey,
 		"credits_applied": creditsApplied,
 		"original_price":  price,
 	}
