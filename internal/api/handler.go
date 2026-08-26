@@ -105,6 +105,10 @@ func (h *Handler) Router() *gin.Engine {
 		// Purchase flow (race-based: first payment wins)
 		authAPI.POST("/purchase/quote", h.getPurchaseQuote)
 		authAPI.POST("/purchase/invoice", h.createPurchaseInvoice)
+		// Anything else in the catalog — storage top-ups today. Named
+		// /purchase/product rather than overloading /purchase/invoice, which is
+		// address-shaped down to its request body.
+		authAPI.POST("/purchase/product", h.purchaseProduct)
 
 		// Credits (withdrawable balance from race losses)
 		authAPI.GET("/credits", h.getCredits)
@@ -127,6 +131,10 @@ func (h *Handler) Router() *gin.Engine {
 		// Quota check + usage recording (for services without a direct DB connection)
 		internalAPI.GET("/quotas/check", h.checkQuota)
 		internalAPI.POST("/quotas/usage", h.recordQuotaUsage)
+
+		// Invoicing on a user's behalf. This is what keeps BTCPay credentials in
+		// ONE service: stash can sell a storage top-up without ever holding them.
+		internalAPI.POST("/invoices", h.internalPurchaseProduct)
 	}
 
 	// Admin interface (NIP-98 signed + platform-admin authorized). See admin.go.

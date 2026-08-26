@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -52,18 +54,53 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 		return
 	}
 
-	// Extract metadata
-	username, ok := event.Metadata["username"].(string)
-	if !ok || username == "" {
-		slog.Error("webhook missing username in metadata", "invoice_id", event.InvoiceID)
-		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Missing username"})
-		return
-	}
-
-	pubkey, ok := event.Metadata["pubkey"].(string)
+	pubkey, ok := event.Metadata[MetaPubkey].(string)
 	if !ok || pubkey == "" {
 		slog.Error("webhook missing pubkey in metadata", "invoice_id", event.InvoiceID)
 		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Missing pubkey"})
+		return
+	}
+
+	// Dispatch on WHAT was bought. This used to read metadata["username"] and
+	// nothing else, so a settled invoice for any other product logged
+	// "Missing username" and dropped the payment — which is why the storage
+	// top-ups have been priced in the catalog since migration 006 with no way to
+	// sell them.
+	switch settlementKind(event.Metadata) {
+	case KindProduct:
+		productID, _ := event.Metadata[MetaProductID].(string)
+		outcome, err := h.settleProduct(ctx, event.InvoiceID, pubkey, productID, time.Now())
+		if err != nil {
+			// 500, deliberately: BTCPay retries on a non-2xx, and a retry is
+			// exactly what we want when the grant failed. Answering 200 here
+			// would take the user's money and lose the thing they bought.
+			slog.Error("product settlement failed",
+				"invoice_id", event.InvoiceID, "product_id", productID,
+				"pubkey", pubkey, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Settlement failed"})
+			return
+		}
+		resp := gin.H{"status": outcome.Status, "message": outcome.Message}
+		for k, v := range outcome.Detail {
+			resp[k] = v
+		}
+		c.JSON(http.StatusOK, resp)
+		return
+
+	case KindAddress:
+		// falls through to the address flow below
+
+	default:
+		slog.Error("webhook metadata names nothing purchasable",
+			"invoice_id", event.InvoiceID, "metadata_keys", metadataKeys(event.Metadata))
+		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Unrecognised invoice metadata"})
+		return
+	}
+
+	username, ok := event.Metadata[MetaUsername].(string)
+	if !ok || username == "" {
+		slog.Error("webhook missing username in metadata", "invoice_id", event.InvoiceID)
+		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Missing username"})
 		return
 	}
 
@@ -114,9 +151,9 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"status":     "race_loss",
-			"credited":   amountSats,
-			"message":    "Username taken, payment credited",
+			"status":   "race_loss",
+			"credited": amountSats,
+			"message":  "Username taken, payment credited",
 		})
 		return
 	}
@@ -134,4 +171,15 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 		"username": username,
 		"address":  username + "@" + h.cfg.Domain,
 	})
+}
+
+// metadataKeys lists the metadata key names for a log line, without the values —
+// invoice metadata carries a pubkey and should not be dumped wholesale.
+func metadataKeys(meta map[string]any) []string {
+	keys := make([]string, 0, len(meta))
+	for k := range meta {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

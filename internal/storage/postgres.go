@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -366,6 +367,82 @@ func (s *Storage) CountRealAddresses(ctx context.Context, pubkey string) (int, e
 		return 0, fmt.Errorf("failed to count real addresses: %w", err)
 	}
 	return n, nil
+}
+
+// Product is a catalog row: what something costs and what buying it grants.
+//
+// GrantsQuotaIncreases is the raw jsonb, e.g. {"storage_bytes": 10737418240}.
+// BillingPeriod carries the grant window for one-time top-ups ("30d"); it is
+// empty for products that grant something permanent, like an address.
+type Product struct {
+	ID                   string
+	DisplayName          string
+	PriceSats            int64
+	ProductType          string
+	BillingPeriod        string
+	GrantsQuotaIncreases map[string]int64
+	Enabled              bool
+}
+
+// GetProduct reads a catalog row.
+//
+// Returns ErrProductNotFound when absent, so a caller can tell "not configured"
+// from "free" — the distinction that made a failed price lookup render as
+// "Free" on the signup page.
+func (s *Storage) GetProduct(ctx context.Context, productID string) (*Product, error) {
+	var (
+		p      Product
+		period sql.NullString
+		quotas []byte
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, display_name, price_sats, product_type,
+		       COALESCE(billing_period, ''), COALESCE(grants_quota_increases, '{}'::jsonb),
+		       COALESCE(enabled, TRUE)
+		FROM products WHERE id = $1
+	`, productID).Scan(&p.ID, &p.DisplayName, &p.PriceSats, &p.ProductType, &period, &quotas, &p.Enabled)
+	if err == sql.ErrNoRows {
+		return nil, ErrProductNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get product: %w", err)
+	}
+	p.BillingPeriod = period.String
+	if len(quotas) > 0 {
+		if err := json.Unmarshal(quotas, &p.GrantsQuotaIncreases); err != nil {
+			return nil, fmt.Errorf("product %s has unreadable grants_quota_increases: %w", productID, err)
+		}
+	}
+	return &p, nil
+}
+
+// AddQuotaGrant records quota bought for a pubkey.
+//
+// expiresAt nil means the grant does not lapse. reference_id is the invoice ID,
+// which is what makes settlement idempotent: the same invoice must not grant
+// twice if BTCPay retries the webhook.
+func (s *Storage) AddQuotaGrant(ctx context.Context, pubkey, quotaTypeID string, bytes int64, source, referenceID string, expiresAt *time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO quota_grants (pubkey, quota_type_id, bytes, source, reference_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, pubkey, quotaTypeID, bytes, source, referenceID, expiresAt)
+	if err != nil {
+		return fmt.Errorf("failed to add quota grant: %w", err)
+	}
+	return nil
+}
+
+// QuotaGrantExists reports whether a grant has already been recorded for this
+// reference (invoice). BTCPay retries webhooks; without this check a retry
+// doubles the user's storage.
+func (s *Storage) QuotaGrantExists(ctx context.Context, referenceID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM quota_grants WHERE reference_id = $1)`, referenceID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check quota grant: %w", err)
+	}
+	return exists, nil
 }
 
 // GetProductPriceSats reads a one-time product's price from the catalog.
