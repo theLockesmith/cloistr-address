@@ -70,19 +70,32 @@ func (h *Handler) priceNameFor(ctx context.Context, username, pubkey string) (Na
 		return price, nil
 	}
 
-	additional, err := h.store.GetProductPriceSats(ctx, AdditionalAddressProductID)
+	additional, err := h.additionalAddressPrice(ctx)
 	if err != nil {
-		if !errors.Is(err, storage.ErrProductNotFound) {
-			return NamePrice{}, err
-		}
-		// Missing catalog row: charge the documented price rather than zero, and
-		// say so loudly. Free is the one answer that cannot be safely guessed.
-		slog.Error("additional-address product missing from catalog; using fallback price",
-			"product_id", AdditionalAddressProductID, "fallback_sats", fallbackAdditionalPriceSats)
-		additional = fallbackAdditionalPriceSats
+		return NamePrice{}, err
 	}
 
 	price.PriceSats = additional
 	price.Additional = true
 	return price, nil
+}
+
+// additionalAddressPrice reads what a second or later free-tier name costs.
+//
+// Shared by priceNameFor and the public pricing endpoint so the two can never
+// disagree: the signup page quoting one number while the quote screen charges
+// another is the exact failure this whole pricing path keeps producing.
+func (h *Handler) additionalAddressPrice(ctx context.Context) (int64, error) {
+	additional, err := h.store.GetProductPriceSats(ctx, AdditionalAddressProductID)
+	if err == nil {
+		return additional, nil
+	}
+	if !errors.Is(err, storage.ErrProductNotFound) {
+		return 0, err
+	}
+	// Missing catalog row: charge the documented price rather than zero, and
+	// say so loudly. Free is the one answer that cannot be safely guessed.
+	slog.Error("additional-address product missing from catalog; using fallback price",
+		"product_id", AdditionalAddressProductID, "fallback_sats", fallbackAdditionalPriceSats)
+	return fallbackAdditionalPriceSats, nil
 }

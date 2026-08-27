@@ -90,6 +90,13 @@ func (h *Handler) Router() *gin.Engine {
 		api.GET("/addresses/check/:username",
 			h.optionalNIP98Middleware(nip98Validator), h.checkUsernameAvailability)
 
+		// Public price list, read straight from the catalog. The signup page's
+		// pricing table used to be hardcoded JSX and contradicted the products
+		// table; see listPricingTiers. Unauthenticated because these are list
+		// prices and the page renders before anyone has signed in — the
+		// caller-specific price still comes from the availability check above.
+		api.GET("/pricing/tiers", h.listPricingTiers)
+
 		// BTCPay webhook (no auth - signature verified in handler)
 		api.POST("/webhook/payment", h.handleBTCPayWebhook)
 	}
