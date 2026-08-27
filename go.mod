@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	git.aegis-hq.xyz/coldforge/cloistr-common v0.3.0
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/lib/pq v1.12.3
 	github.com/nbd-wtf/go-nostr v0.52.3
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2 // indirect
 	github.com/ImVexed/fasturl v0.0.0-20230304231329-4e41488060f3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6 // indirect
