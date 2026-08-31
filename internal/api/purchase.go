@@ -11,6 +11,7 @@ import (
 
 	nameval "git.aegis-hq.xyz/coldforge/cloistr-common/username"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
@@ -308,7 +309,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		"original_price":  price,
 	}
 
-	invoice, err := h.btcpay.CreateInvoice(finalPrice, metadata)
+	invoice, err := h.btcpay.CreateInvoice(ctx, finalPrice, metadata)
 	if err != nil {
 		slog.Error("failed to create BTCPay invoice",
 			"username", username,
@@ -320,13 +321,24 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		if creditsApplied > 0 {
 			refund(ctx, h, pubkey, creditsApplied, "invoice_creation_failed_refund", username)
 		}
+		// Distinguish "the Lightning backend is having a moment" from "this
+		// request was wrong". The first is transient, retrying genuinely works,
+		// and 500 tells the user nothing they can act on. It is reported as 503
+		// so the UI can say "try again" and mean it.
+		if errors.Is(err, btcpay.ErrPaymentMethodUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "Lightning is temporarily unavailable, please try again",
+				"retries": true,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invoice"})
 		return
 	}
 
 	// Get payment methods to retrieve BOLT11 invoice
 	var paymentRequest string
-	methods, err := h.btcpay.GetInvoicePaymentMethods(invoice.ID)
+	methods, err := h.btcpay.GetInvoicePaymentMethods(ctx, invoice.ID)
 	if err != nil {
 		slog.Warn("failed to get payment methods", "invoice_id", invoice.ID, "error", err)
 	} else {
