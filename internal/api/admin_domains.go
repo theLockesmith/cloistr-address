@@ -184,7 +184,7 @@ func (h *Handler) proxyToEmail(c *gin.Context, method, path string, body []byte,
 		c.JSON(http.StatusBadGateway, gin.H{"error": "email service unavailable"})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxDomainResponseBytes))
 	if err != nil {

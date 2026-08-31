@@ -166,7 +166,7 @@ func (c *Client) Connect(ctx context.Context) error {
 // Close closes the relay connection
 func (c *Client) Close() {
 	if c.relay != nil {
-		// Close() has no error to return to its caller, and a failed close on a
+// Close() has no error to return to its caller, and a failed close on a
 		// relay we are done with changes nothing.
 		_ = c.relay.Close()
 	}

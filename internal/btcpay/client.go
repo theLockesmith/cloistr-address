@@ -214,7 +214,7 @@ func (c *Client) send(ctx context.Context, method, url string, body []byte) (int
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

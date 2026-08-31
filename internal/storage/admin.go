@@ -78,7 +78,7 @@ func (s *Storage) LogAdminAudit(ctx context.Context, e AuditEntry) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 	if err := writeAudit(ctx, tx, e); err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (s *Storage) AdminGrantAddress(ctx context.Context, actor, sig, username, d
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	if err := ensureUser(ctx, tx, pubkey); err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func (s *Storage) AdminRevokeAddress(ctx context.Context, actor, sig, username, 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	var id int64
 	var prevPubkey string
@@ -301,7 +301,7 @@ func (s *Storage) AdminTransferAddress(ctx context.Context, actor, sig, username
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	if err := ensureUser(ctx, tx, toPubkey); err != nil {
 		return err
@@ -391,7 +391,7 @@ func (s *Storage) AdminListAddressesByPubkey(ctx context.Context, pubkey string)
 	if err != nil {
 		return nil, fmt.Errorf("list addresses: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Address
 	for rows.Next() {
@@ -416,7 +416,7 @@ func (s *Storage) SetAddressPrimary(ctx context.Context, actor, sig, username, d
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	var addrID int64
 	var addrPubkey string
@@ -471,7 +471,7 @@ func (s *Storage) SetAddressNIP05(ctx context.Context, actor, sig, username, dom
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	var addrID int64
 	var addrPubkey string
@@ -568,7 +568,7 @@ func (s *Storage) AdminLookupUser(ctx context.Context, name, domain string) (*Us
 	if err != nil {
 		return nil, fmt.Errorf("list addresses: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var addrs []AddressSummary
 	for rows.Next() {
@@ -603,7 +603,7 @@ func (s *Storage) AddReserved(ctx context.Context, actor, sig, username string, 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO reserved_usernames (username, reserved_for_pubkey, reason)
@@ -634,7 +634,7 @@ func (s *Storage) RemoveReserved(ctx context.Context, actor, sig, username strin
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM reserved_usernames WHERE username = $1`, username)
 	if err != nil {
@@ -666,7 +666,7 @@ func (s *Storage) ListReserved(ctx context.Context) ([]ReservedUsername, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list reserved: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []ReservedUsername
 	for rows.Next() {
@@ -699,7 +699,7 @@ func (s *Storage) SetQuota(ctx context.Context, actor, sig, pubkey, quotaTypeID 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	if err := ensureUser(ctx, tx, pubkey); err != nil {
 		return err
@@ -743,7 +743,7 @@ func (s *Storage) ResetQuota(ctx context.Context, actor, sig, pubkey, quotaTypeI
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM user_quotas WHERE pubkey = $1 AND quota_type_id = $2`, pubkey, quotaTypeID)
 	if err != nil {
@@ -785,7 +785,7 @@ func (s *Storage) GetQuotas(ctx context.Context, pubkey string) ([]QuotaView, er
 	if err != nil {
 		return nil, fmt.Errorf("get quotas: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []QuotaView
 	for rows.Next() {
@@ -811,7 +811,7 @@ func (s *Storage) ListTiers(ctx context.Context) ([]UsernameTier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list tiers: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []UsernameTier
 	for rows.Next() {
@@ -830,7 +830,7 @@ func (s *Storage) UpdateTier(ctx context.Context, actor, sig, tierName string, p
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	var prevPrice int64
 	var prevEnabled bool
@@ -974,7 +974,7 @@ func (s *Storage) ListAudit(ctx context.Context, f AuditListFilter) ([]AuditRow,
 	if err != nil {
 		return nil, fmt.Errorf("list audit: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []AuditRow
 	for rows.Next() {
