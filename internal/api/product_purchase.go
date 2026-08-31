@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
@@ -102,7 +103,7 @@ func (h *Handler) createProductInvoice(c *gin.Context, buyerPubkey string) {
 		return
 	}
 
-	invoice, err := h.btcpay.CreateInvoice(product.PriceSats, map[string]interface{}{
+	invoice, err := h.btcpay.CreateInvoice(ctx, product.PriceSats, map[string]interface{}{
 		MetaKind:      KindProduct,
 		MetaProductID: product.ID,
 		MetaPubkey:    buyerPubkey,
@@ -110,6 +111,15 @@ func (h *Handler) createProductInvoice(c *gin.Context, buyerPubkey string) {
 	if err != nil {
 		slog.Error("failed to create product invoice",
 			"product_id", product.ID, "pubkey", buyerPubkey, "error", err)
+		// Transient Lightning trouble is a 503 the caller can retry, not a 500
+		// that reads as "your request was wrong". Same rule as the address path.
+		if errors.Is(err, btcpay.ErrPaymentMethodUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":   "Lightning is temporarily unavailable, please try again",
+				"retries": true,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invoice"})
 		return
 	}

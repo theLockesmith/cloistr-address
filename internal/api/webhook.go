@@ -105,7 +105,7 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 	}
 
 	// Get invoice details for amount (in case of overpayment credits)
-	invoice, err := h.btcpay.GetInvoice(event.InvoiceID)
+	invoice, err := h.btcpay.GetInvoice(ctx, event.InvoiceID)
 	if err != nil {
 		slog.Error("failed to get invoice details", "invoice_id", event.InvoiceID, "error", err)
 		// Continue anyway - we'll use 0 for amount if needed
