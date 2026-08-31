@@ -207,7 +207,7 @@ func (s *Storage) GetAddressesByPubkey(ctx context.Context, pubkey string) ([]Ad
 	if err != nil {
 		return nil, fmt.Errorf("failed to list addresses: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Address
 	for rows.Next() {
@@ -235,7 +235,7 @@ func (s *Storage) GetRelaysForAddress(ctx context.Context, addressID int64) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("failed to get relays: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var relays []string
 	for rows.Next() {
@@ -497,7 +497,7 @@ func (s *Storage) GetAllActiveAddresses(ctx context.Context, domain string) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("failed to get addresses: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var addresses []*Address
 	for rows.Next() {
@@ -571,7 +571,7 @@ func (s *Storage) TransferAddress(ctx context.Context, addressID int64, newPubke
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Ensure the target user row exists (FK guard).
 	if err := ensureUser(ctx, tx, newPubkey); err != nil {
@@ -653,7 +653,7 @@ func (s *Storage) RegisterAddress(ctx context.Context, username, domain, pubkey 
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	var existingCount int
 	if err := tx.QueryRowContext(ctx, `
@@ -699,7 +699,7 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Check availability within transaction
 	var exists bool
@@ -868,7 +868,7 @@ func (s *Storage) AddCredits(ctx context.Context, pubkey string, amountSats int6
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Upsert credit balance
 	_, err = tx.ExecContext(ctx, `
@@ -909,7 +909,7 @@ func (s *Storage) DeductCredits(ctx context.Context, pubkey string, amountSats i
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Check and deduct
 	var newBalance int64
@@ -949,7 +949,7 @@ func (s *Storage) CreateWithdrawalRequest(ctx context.Context, pubkey string, am
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Check and deduct credits
 	var newBalance int64
@@ -1007,7 +1007,7 @@ func (s *Storage) GetPendingWithdrawals(ctx context.Context) ([]*CreditWithdrawa
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending withdrawals: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var withdrawals []*CreditWithdrawal
 	for rows.Next() {
@@ -1061,7 +1061,7 @@ func (s *Storage) RefundFailedWithdrawal(ctx context.Context, withdrawalID int64
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
 
 	// Get withdrawal details
 	var pubkey string
@@ -1111,7 +1111,7 @@ func (s *Storage) GetWithdrawalsByPubkey(ctx context.Context, pubkey string, lim
 	if err != nil {
 		return nil, fmt.Errorf("failed to get withdrawals: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var withdrawals []*CreditWithdrawal
 	for rows.Next() {

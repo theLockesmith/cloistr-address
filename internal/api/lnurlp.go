@@ -243,7 +243,7 @@ func (h *Handler) handleProxyInvoice(c *gin.Context, proxyAddress string, amount
 		})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -300,7 +300,7 @@ func (h *Handler) handleProxyInvoice(c *gin.Context, proxyAddress string, amount
 		})
 		return
 	}
-	defer invoiceResp.Body.Close()
+	defer func() { _ = invoiceResp.Body.Close() }()
 
 	invoiceBody, err := io.ReadAll(invoiceResp.Body)
 	if err != nil {
