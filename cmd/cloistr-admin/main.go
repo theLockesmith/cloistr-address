@@ -296,7 +296,7 @@ func doRequest(method, path string, body map[string]any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	// Pretty-print JSON when possible.
