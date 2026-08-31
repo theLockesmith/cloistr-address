@@ -78,11 +78,11 @@ func TestCreateInvoice_RetriesTransientLNFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, realLNTimeoutBody)
+			_, _ = fmt.Fprint(w, realLNTimeoutBody)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"id":"inv-2","storeId":"s","amount":"1000","status":"New"}`)
+		_, _ = fmt.Fprint(w, `{"id":"inv-2","storeId":"s","amount":"1000","status":"New"}`)
 	}))
 	defer srv.Close()
 
@@ -105,7 +105,7 @@ func TestCreateInvoice_DoesNotRetryRealRejection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"code":"unauthorized"}`)
+		_, _ = fmt.Fprint(w, `{"code":"unauthorized"}`)
 	}))
 	defer srv.Close()
 
@@ -126,7 +126,7 @@ func TestCreateInvoice_DoesNotRetryRealRejection(t *testing.T) {
 func TestCreateInvoice_ReportsPaymentMethodUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, realLNTimeoutBody)
+		_, _ = fmt.Fprint(w, realLNTimeoutBody)
 	}))
 	defer srv.Close()
 
@@ -173,7 +173,7 @@ func TestCreateInvoice_CapsAttemptsWhenFailuresAreFast(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, realLNTimeoutBody)
+		_, _ = fmt.Fprint(w, realLNTimeoutBody)
 	}))
 	defer srv.Close()
 
@@ -196,7 +196,7 @@ func TestCreateInvoice_CapsAttemptsWhenFailuresAreFast(t *testing.T) {
 func TestCreateInvoice_StopsWithinBudget(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, realLNTimeoutBody)
+		_, _ = fmt.Fprint(w, realLNTimeoutBody)
 	}))
 	defer srv.Close()
 
