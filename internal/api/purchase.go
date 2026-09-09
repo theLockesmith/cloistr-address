@@ -43,8 +43,9 @@ type PurchaseQuoteResponse struct {
 
 // PurchaseInvoiceRequest represents an invoice creation request
 type PurchaseInvoiceRequest struct {
-	Username   string `json:"username" binding:"required"`
-	UseCredits bool   `json:"use_credits,omitempty"` // Apply credits to reduce price
+	Username         string  `json:"username" binding:"required"`
+	UseCredits       bool    `json:"use_credits,omitempty"`          // Apply credits to reduce price
+	LightningAddress *string `json:"lightning_address,omitempty"`    // Optional: auto-configure proxy Lightning Address on registration
 }
 
 // PurchaseInvoiceResponse represents a created invoice
@@ -154,6 +155,15 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 	}
 
 	username := req.Username
+
+	// Validate optional Lightning Address up front so we reject a bad one
+	// before taking payment.
+	if req.LightningAddress != nil && *req.LightningAddress != "" {
+		if !isValidLightningAddress(*req.LightningAddress) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Lightning Address format"})
+			return
+		}
+	}
 
 	// Validate format
 	if !nameval.IsValidHumanName(username) {
@@ -266,6 +276,9 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 			"credits_used", creditsApplied,
 		)
 
+		// Auto-configure Lightning proxy if the caller provided an address.
+		h.autoConfigureLightning(ctx, addr.ID, req.LightningAddress, username)
+
 		c.JSON(http.StatusCreated, gin.H{
 			"success":        true,
 			"username":       username,
@@ -298,7 +311,9 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		return
 	}
 
-	// Create BTCPay invoice with metadata for webhook processing
+	// Create BTCPay invoice with metadata for webhook processing.
+	// The lightning_address key is picked up by the webhook on settlement
+	// to auto-configure a proxy row in address_lightning.
 	metadata := map[string]interface{}{
 		// Tagged explicitly. settlementKind() still infers "address" from a bare
 		// username so invoices minted before this key existed keep settling.
@@ -307,6 +322,9 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		MetaPubkey:        pubkey,
 		"credits_applied": creditsApplied,
 		"original_price":  price,
+	}
+	if req.LightningAddress != nil && *req.LightningAddress != "" {
+		metadata[MetaLightningAddress] = *req.LightningAddress
 	}
 
 	invoice, err := h.btcpay.CreateInvoice(ctx, finalPrice, metadata)
@@ -470,4 +488,29 @@ func refund(ctx context.Context, h *Handler, pubkey string, amount int64, reason
 		return false
 	}
 	return true
+}
+
+// autoConfigureLightning creates a proxy Lightning Address row for a newly
+// registered address. Best-effort: a failure here means the user has to
+// configure lightning manually via PUT /api/v1/addresses/lightning, which is
+// no worse than the status quo. We log at WARN, not ERROR, because the address
+// itself was registered successfully.
+func (h *Handler) autoConfigureLightning(ctx context.Context, addressID int64, lnAddress *string, username string) {
+	if lnAddress == nil || *lnAddress == "" {
+		return
+	}
+	err := h.store.UpsertLightningConfig(ctx, addressID, "proxy", *lnAddress)
+	if err != nil {
+		slog.Warn("failed to auto-configure lightning proxy on registration",
+			"address_id", addressID,
+			"username", username,
+			"lightning_address", *lnAddress,
+			"error", err,
+		)
+		return
+	}
+	slog.Info("auto-configured lightning proxy on registration",
+		"username", username,
+		"lightning_address", *lnAddress,
+	)
 }
