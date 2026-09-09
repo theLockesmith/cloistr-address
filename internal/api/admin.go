@@ -46,6 +46,7 @@ func (h *Handler) registerAdminRoutes(r *gin.Engine) {
 		admin.POST("/addresses/transfer", h.adminTransferAddress)
 		admin.POST("/addresses/primary", h.adminSetAddressPrimary)
 		admin.POST("/addresses/nip05", h.adminSetAddressNIP05)
+		admin.POST("/addresses/lightning", h.adminSetLightning)
 
 		// User lookup (name → pubkey + all addresses)
 		admin.GET("/users/lookup", h.adminLookupUser)
@@ -399,6 +400,82 @@ func (h *Handler) adminSetAddressNIP05(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// adminSetLightning configures (or disables) the Lightning Address for a given username.
+// POST /admin/v1/addresses/lightning
+// Body: {"username":"alice","domain":"cloistr.xyz","mode":"proxy","proxy_address":"alice@getalby.com"}
+// mode: "proxy" | "disabled"
+func (h *Handler) adminSetLightning(c *gin.Context) {
+	var req struct {
+		Username     string `json:"username" binding:"required"`
+		Domain       string `json:"domain,omitempty"`
+		Mode         string `json:"mode" binding:"required"`
+		ProxyAddress string `json:"proxy_address,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+	if req.Mode != "proxy" && req.Mode != "disabled" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mode must be 'proxy' or 'disabled'"})
+		return
+	}
+	if req.Mode == "proxy" {
+		if req.ProxyAddress == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "proxy_address required when mode is 'proxy'"})
+			return
+		}
+		if !isValidLightningAddress(req.ProxyAddress) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Lightning Address format"})
+			return
+		}
+	}
+	domain := req.Domain
+	if domain == "" {
+		domain = h.cfg.Domain
+	}
+	ctx := c.Request.Context()
+
+	addr, err := h.store.GetAddressByUsername(ctx, strings.ToLower(req.Username), domain)
+	if err != nil {
+		abortStore(c, err, "Failed to look up address")
+		return
+	}
+	if addr == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "address not found"})
+		return
+	}
+
+	if err := h.store.UpsertLightningConfig(ctx, addr.ID, req.Mode, req.ProxyAddress); err != nil {
+		slog.Error("admin set_lightning failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update lightning config"})
+		return
+	}
+
+	actor, sig := adminActor(c)
+	_ = h.store.LogAdminAudit(ctx, storage.AuditEntry{
+		TableName:     "address_lightning",
+		RecordID:      strconv.FormatInt(addr.ID, 10),
+		Action:        "lightning.set",
+		ActorPubkey:   actor,
+		SubjectPubkey: addr.Pubkey,
+		NewValues:     map[string]any{"mode": req.Mode, "proxy_address": req.ProxyAddress},
+		Signature:     sig,
+	})
+
+	slog.Info("admin set lightning config",
+		"username", req.Username, "domain", domain,
+		"mode", req.Mode, "proxy_address", req.ProxyAddress,
+		"actor", safePrefix(actor),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"address_id":    addr.ID,
+		"username":      addr.Username,
+		"mode":          req.Mode,
+		"proxy_address": req.ProxyAddress,
+	})
 }
 
 // adminLookupUser resolves a canonical username to a pubkey and all its active addresses.
