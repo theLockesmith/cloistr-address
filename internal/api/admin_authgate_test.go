@@ -42,6 +42,7 @@ func TestAdminRoutesRejectMissingAuth(t *testing.T) {
 		{"POST", "/admin/v1/addresses/revoke"},
 		{"POST", "/admin/v1/addresses/primary"},
 		{"POST", "/admin/v1/addresses/nip05"},
+		{"POST", "/admin/v1/addresses/lightning"},
 		{"POST", "/admin/v1/reserved"},
 		{"DELETE", "/admin/v1/reserved/foo"},
 		{"POST", "/admin/v1/quotas"},

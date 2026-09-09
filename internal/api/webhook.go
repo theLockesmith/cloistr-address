@@ -166,6 +166,10 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 		"amount_sats", amountSats,
 	)
 
+	// Auto-configure Lightning proxy if the invoice carried an address.
+	if lnAddr, _ := event.Metadata[MetaLightningAddress].(string); lnAddr != "" {
+		h.autoConfigureLightning(ctx, addr.ID, &lnAddr, username)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status":   "registered",
 		"username": username,

@@ -13,6 +13,7 @@
 //	cloistr-admin address grant   --user <pubkey> --handle <name> [--domain d] [--display-name n]
 //	cloistr-admin address revoke  --handle <name> [--domain d] --reason <r>
 //	cloistr-admin address transfer --handle <name> --to <pubkey> [--domain d]
+//	cloistr-admin address lightning --handle <name> --mode proxy --address <ln-addr> [--domain d]
 //	cloistr-admin address list    --user <pubkey>
 //	cloistr-admin reserve add     --handle <name> [--for <pubkey>] [--reason r]
 //	cloistr-admin reserve remove  --handle <name>
@@ -95,7 +96,7 @@ Run "cloistr-admin help" and see the package doc for the full command list.
 
 func cmdAddress(a []string) error {
 	if len(a) == 0 {
-		return fmt.Errorf("address subcommand required (grant|revoke|transfer|list)")
+		return fmt.Errorf("address subcommand required (grant|revoke|transfer|lightning|list)")
 	}
 	fs := flag.NewFlagSet("address", flag.ExitOnError)
 	user := fs.String("user", "", "target pubkey (64 hex)")
@@ -104,6 +105,8 @@ func cmdAddress(a []string) error {
 	display := fs.String("display-name", "", "display name")
 	to := fs.String("to", "", "transfer target pubkey")
 	reason := fs.String("reason", "", "reason")
+	mode := fs.String("mode", "proxy", "lightning mode (proxy|disabled)")
+	lnAddr := fs.String("address", "", "proxy Lightning Address (e.g. alice@getalby.com)")
 	_ = fs.Parse(a[1:])
 
 	switch a[0] {
@@ -128,6 +131,15 @@ func cmdAddress(a []string) error {
 			body["domain"] = *domain
 		}
 		return doRequest(http.MethodPost, "/admin/v1/addresses/transfer", body)
+	case "lightning":
+		body := map[string]any{"username": *handle, "mode": *mode}
+		if *lnAddr != "" {
+			body["proxy_address"] = *lnAddr
+		}
+		if *domain != "" {
+			body["domain"] = *domain
+		}
+		return doRequest(http.MethodPost, "/admin/v1/addresses/lightning", body)
 	case "list":
 		return doRequest(http.MethodGet, "/admin/v1/addresses?pubkey="+url.QueryEscape(*user), nil)
 	default:

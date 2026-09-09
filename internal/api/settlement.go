@@ -13,10 +13,11 @@ import (
 // Invoice metadata keys. BTCPay hands these back verbatim on settlement, so they
 // are the whole contract between "create an invoice" and "grant the thing".
 const (
-	MetaKind      = "kind"       // "address" | "product"
-	MetaUsername  = "username"   // address purchases
-	MetaPubkey    = "pubkey"     // who gets the thing
-	MetaProductID = "product_id" // product purchases
+	MetaKind             = "kind"              // "address" | "product"
+	MetaUsername         = "username"           // address purchases
+	MetaPubkey           = "pubkey"             // who gets the thing
+	MetaProductID        = "product_id"         // product purchases
+	MetaLightningAddress = "lightning_address"  // optional: auto-configure proxy on registration
 )
 
 // QuotaExpiresDaysKey is a RESERVED key inside a product's
