@@ -15,6 +15,8 @@
 //	cloistr-admin address transfer --handle <name> --to <pubkey> [--domain d]
 //	cloistr-admin address lightning --handle <name> --mode proxy --address <ln-addr> [--domain d]
 //	cloistr-admin address list    --user <pubkey>
+//	cloistr-admin tenant create   --id <name> --owner <pubkey>
+//	cloistr-admin tenant quota   --id <name> --type <quota_type> --limit <bytes>
 //	cloistr-admin reserve add     --handle <name> [--for <pubkey>] [--reason r]
 //	cloistr-admin reserve remove  --handle <name>
 //	cloistr-admin reserve list
@@ -69,6 +71,8 @@ func main() {
 		err = cmdCredits(args[1:])
 	case "tier":
 		err = cmdTier(args[1:])
+	case "tenant":
+		err = cmdTenant(args[1:])
 	case "audit":
 		err = cmdAudit(args[1:])
 	case "-h", "--help", "help":
@@ -378,4 +382,32 @@ func loadSecretKey() (string, error) {
 		return raw, nil
 	}
 	return "", fmt.Errorf("CLOISTR_ADMIN_NSEC must be nsec1... or 64-hex")
+}
+
+func cmdTenant(a []string) error {
+	if len(a) == 0 {
+		return fmt.Errorf("tenant subcommand required (create|quota)")
+	}
+	fs := flag.NewFlagSet("tenant", flag.ExitOnError)
+	id := fs.String("id", "", "tenant id (e.g. arbiter-fleet)")
+	owner := fs.String("owner", "", "owner pubkey (64 hex)")
+	qtype := fs.String("type", "", "quota type id (e.g. storage_bytes)")
+	limit := fs.Int64("limit", 0, "quota limit in bytes (0 = unlimited)")
+	_ = fs.Parse(a[1:])
+
+	switch a[0] {
+	case "create":
+		return doRequest(http.MethodPost, "/admin/v1/tenants", map[string]any{
+			"id":           *id,
+			"owner_pubkey": *owner,
+		})
+	case "quota":
+		return doRequest(http.MethodPost, "/admin/v1/tenants/quota", map[string]any{
+			"tenant_id":  *id,
+			"quota_type": *qtype,
+			"limit":      *limit,
+		})
+	default:
+		return fmt.Errorf("unknown tenant subcommand %q", a[0])
+	}
 }
