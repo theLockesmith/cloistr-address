@@ -13,7 +13,7 @@ func TestCreateTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
 	mock.ExpectQuery("INSERT INTO tenants").
@@ -37,7 +37,7 @@ func TestAddTenantMember_EnsuresUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
 	pk := "bbbb000000000000000000000000000000000000000000000000000000000000"
@@ -66,7 +66,7 @@ func TestRemoveTenantMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
 	pk := "cccc000000000000000000000000000000000000000000000000000000000000"
@@ -88,7 +88,7 @@ func TestSetTenantQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
 	mock.ExpectExec("INSERT INTO tenant_quotas").
@@ -108,7 +108,7 @@ func TestGetTenantForPubkey_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
 	pk := "dddd000000000000000000000000000000000000000000000000000000000000"
