@@ -1,4 +1,4 @@
--- Test schema matching production (subset needed for tenant integration tests)
+-- Test schema matching production (subset needed for integration tests)
 
 CREATE TABLE users (
     pubkey CHAR(64) PRIMARY KEY,
@@ -30,6 +30,56 @@ CREATE TABLE addresses (
     nip05_active BOOLEAN NOT NULL DEFAULT FALSE,
     auto_assigned BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+CREATE TABLE address_lightning (
+    address_id INTEGER NOT NULL PRIMARY KEY,
+    mode VARCHAR(20) NOT NULL DEFAULT 'disabled',
+    proxy_address TEXT,
+    nwc_connection TEXT,
+    min_sendable_msats BIGINT NOT NULL DEFAULT 1000,
+    max_sendable_msats BIGINT NOT NULL DEFAULT 100000000,
+    comment_allowed INTEGER NOT NULL DEFAULT 255,
+    allows_nostr BOOLEAN NOT NULL DEFAULT TRUE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    nwc_relay_url TEXT,
+    nwc_wallet_pubkey TEXT,
+    nwc_secret_encrypted TEXT,
+    nwc_last_success_at TIMESTAMPTZ,
+    nwc_last_error TEXT,
+    nwc_error_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE reserved_usernames (
+    username VARCHAR(50) NOT NULL PRIMARY KEY,
+    reserved_for_pubkey CHAR(64),
+    reason TEXT,
+    reserved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE address_ownership (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    domain VARCHAR(255) NOT NULL DEFAULT 'cloistr.xyz',
+    pubkey CHAR(64) NOT NULL,
+    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_to TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION is_username_available(check_username VARCHAR)
+RETURNS BOOLEAN AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM addresses WHERE username = LOWER(check_username) AND active = TRUE) THEN
+        RETURN FALSE;
+    END IF;
+    IF EXISTS (SELECT 1 FROM reserved_usernames WHERE username = LOWER(check_username) AND reserved_for_pubkey IS NULL) THEN
+        RETURN FALSE;
+    END IF;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
 
 CREATE TABLE quota_types (
     id VARCHAR(50) PRIMARY KEY,
