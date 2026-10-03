@@ -20,22 +20,32 @@
 -- 1. Tenant tables ---------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS tenants (
-    id           TEXT        PRIMARY KEY,
-    owner_pubkey CHAR(64)   NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id             VARCHAR(50)  PRIMARY KEY,
+    display_name   VARCHAR(255) NOT NULL DEFAULT '',
+    owner_pubkey   CHAR(64)     NOT NULL,
+    enabled        BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    billing_pubkey CHAR(64),
+    billing_email  VARCHAR(255),
+    notes          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tenant_members (
-    tenant_id TEXT      NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    pubkey    CHAR(64)  NOT NULL,
-    added_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    tenant_id  VARCHAR(50) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    pubkey     CHAR(64)    NOT NULL,
+    role       VARCHAR(20) NOT NULL DEFAULT 'member',
+    joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    invited_by CHAR(64),
     PRIMARY KEY (tenant_id, pubkey)
 );
 
 CREATE TABLE IF NOT EXISTS tenant_quotas (
-    tenant_id     TEXT        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id     VARCHAR(50) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     quota_type_id VARCHAR(50) NOT NULL,
     quota_limit   BIGINT      NOT NULL,
+    current_usage BIGINT      NOT NULL DEFAULT 0,
+    last_updated  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, quota_type_id)
 );
 

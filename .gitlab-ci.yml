@@ -29,8 +29,20 @@ build:
 
 test:unit:
   extends: [.go-test, .cloistr-rules]
+  services:
+    - name: postgres:16-bookworm
+      alias: postgres
+      variables:
+        POSTGRES_DB: cloistr
+        POSTGRES_USER: cloistr
+        POSTGRES_PASSWORD: testpass
   variables:
     GO_TEST_PACKAGES: "./internal/..."
+    TEST_DATABASE_URL: "postgres://cloistr:testpass@postgres:5432/cloistr?sslmode=disable"
+  before_script:
+    - !reference [.go-test, before_script]
+    - apt-get install -y --no-install-recommends postgresql-client
+    - PGPASSWORD=testpass psql -h postgres -U cloistr -d cloistr -f db/test_schema.sql
 
 # 25m, not the template's 15m default. golangci-lint analysed this module
 # cleanly ("0 issues.") and then exited 1 on "Timeout exceeded" at 15m52s

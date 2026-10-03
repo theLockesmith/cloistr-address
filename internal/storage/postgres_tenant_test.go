@@ -92,6 +92,38 @@ func TestTenantQuotaPooling(t *testing.T) {
 		q.Limit, q3.Limit, q3.Used)
 }
 
+func TestTenantListMembersAgainstProdSchema(t *testing.T) {
+	s, done := testStore(t)
+	defer done()
+	ctx := context.Background()
+
+	ownerPK := randPubkey(t)
+	memberPK := randPubkey(t)
+	tenantID := "test-list-" + ownerPK[:8]
+	defer cleanupTenant(t, s, tenantID, ownerPK, memberPK)
+
+	if _, err := s.CreateTenant(ctx, tenantID, ownerPK); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if err := s.AddTenantMember(ctx, tenantID, memberPK); err != nil {
+		t.Fatalf("AddTenantMember: %v", err)
+	}
+
+	members, err := s.ListTenantMembers(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("ListTenantMembers: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("got %d members, want 1", len(members))
+	}
+	if members[0].Pubkey != memberPK {
+		t.Fatalf("got pubkey=%q, want %q", members[0].Pubkey, memberPK)
+	}
+	if members[0].JoinedAt.IsZero() {
+		t.Fatal("joined_at should not be zero")
+	}
+}
+
 func TestTenantQuotaPoolsUsageAcrossMembers(t *testing.T) {
 	s, done := testStore(t)
 	defer done()
