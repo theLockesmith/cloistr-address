@@ -123,6 +123,11 @@ func (h *Handler) Router() *gin.Engine {
 
 		// Transfer
 		authAPI.POST("/addresses/transfer", h.transferAddress)
+
+		// Tenant member management (owner-gated)
+		authAPI.POST("/tenants/:id/members", h.handleAddTenantMember)
+		authAPI.DELETE("/tenants/:id/members/:pubkey", h.handleRemoveTenantMember)
+		authAPI.GET("/tenants/:id/members", h.handleListTenantMembers)
 	}
 
 	// Internal API endpoints (for service-to-service calls)

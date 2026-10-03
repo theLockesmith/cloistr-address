@@ -69,6 +69,10 @@ func (h *Handler) registerAdminRoutes(r *gin.Engine) {
 		admin.GET("/tiers", h.adminListTiers)
 		admin.PUT("/tiers", h.adminUpdateTier)
 
+		// Tenants
+		admin.POST("/tenants", h.adminCreateTenant)
+		admin.POST("/tenants/quota", h.adminSetTenantQuota)
+
 		// Audit
 		admin.GET("/audit", h.adminListAudit)
 
