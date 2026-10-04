@@ -122,7 +122,9 @@ func (s *Storage) ListTenantMembers(ctx context.Context, tenantID string) ([]Ten
 	}
 	defer rows.Close()
 
-	var members []TenantMember
+	// Non-nil so an empty tenant encodes as [] rather than null; API
+	// consumers iterate this list.
+	members := []TenantMember{}
 	for rows.Next() {
 		var m TenantMember
 		if err := rows.Scan(&m.TenantID, &m.Pubkey, &m.JoinedAt); err != nil {
