@@ -39,9 +39,11 @@ func (s *Storage) CreateTenant(ctx context.Context, id, ownerPubkey string) (*Te
 		return nil, fmt.Errorf("ensure user for tenant owner: %w", err)
 	}
 
+	// display_name is NOT NULL with no default in production; the id is the
+	// only name we have at creation time.
 	t := &Tenant{ID: id, OwnerPubkey: ownerPubkey}
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO tenants (id, owner_pubkey) VALUES ($1, $2)
+		INSERT INTO tenants (id, display_name, owner_pubkey) VALUES ($1, $1, $2)
 		RETURNING created_at
 	`, id, ownerPubkey).Scan(&t.CreatedAt)
 	if err != nil {
