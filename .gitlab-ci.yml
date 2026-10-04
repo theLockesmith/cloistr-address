@@ -43,6 +43,7 @@ test:unit:
     - !reference [.go-test, before_script]
     - apt-get install -y --no-install-recommends postgresql-client
     - PGPASSWORD=testpass psql -h postgres -U cloistr -d cloistr -f db/test_schema.sql
+    - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/011_up.sql
 
 # 25m, not the template's 15m default. golangci-lint analysed this module
 # cleanly ("0 issues.") and then exited 1 on "Timeout exceeded" at 15m52s
