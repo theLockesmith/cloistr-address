@@ -1,7 +1,7 @@
 -- Test schema matching production (subset needed for integration tests)
 
 CREATE TABLE users (
-    pubkey CHAR(64) PRIMARY KEY,
+    pubkey CHAR(64) PRIMARY KEY CONSTRAINT pubkey_hex CHECK (pubkey ~ '^[0-9a-f]{64}$'),
     display_name VARCHAR(255),
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE,
@@ -125,29 +125,33 @@ CREATE TABLE user_quotas (
 CREATE TABLE tenants (
     id VARCHAR(50) PRIMARY KEY,
     display_name VARCHAR(255) NOT NULL DEFAULT '',
-    owner_pubkey CHAR(64) NOT NULL,
+    owner_pubkey CHAR(64) NOT NULL REFERENCES users(pubkey),
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    billing_pubkey CHAR(64),
+    billing_pubkey CHAR(64) REFERENCES users(pubkey),
     billing_email VARCHAR(255),
-    notes TEXT
+    notes TEXT,
+    CONSTRAINT id_format CHECK (id ~ '^[a-z0-9_-]{2,50}$'),
+    CONSTRAINT pubkey_hex CHECK (owner_pubkey ~ '^[0-9a-f]{64}$')
 );
 
 CREATE TABLE tenant_members (
     tenant_id VARCHAR(50) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    pubkey CHAR(64) NOT NULL,
+    pubkey CHAR(64) NOT NULL REFERENCES users(pubkey) ON DELETE CASCADE,
     role VARCHAR(20) NOT NULL DEFAULT 'member',
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invited_by CHAR(64),
-    PRIMARY KEY (tenant_id, pubkey)
+    PRIMARY KEY (tenant_id, pubkey),
+    CONSTRAINT pubkey_hex CHECK (pubkey ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT role_check CHECK (role IN ('owner', 'admin', 'member'))
 );
 
 CREATE TABLE tenant_quotas (
     tenant_id VARCHAR(50) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    quota_type_id VARCHAR(50) NOT NULL,
+    quota_type_id VARCHAR(50) NOT NULL REFERENCES quota_types(id),
     quota_limit BIGINT NOT NULL,
-    current_usage BIGINT NOT NULL DEFAULT 0,
+    current_usage BIGINT NOT NULL DEFAULT 0 CONSTRAINT usage_not_negative CHECK (current_usage >= 0),
     last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, quota_type_id)
 );

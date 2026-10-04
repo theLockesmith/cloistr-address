@@ -16,9 +16,14 @@ func TestCreateTenant(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	s := NewWithDB(db)
 
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO users").
+		WithArgs("aaaa000000000000000000000000000000000000000000000000000000000000").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("INSERT INTO tenants").
 		WithArgs("arbiter-fleet", "aaaa000000000000000000000000000000000000000000000000000000000000").
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)))
+	mock.ExpectCommit()
 
 	tenant, err := s.CreateTenant(context.Background(), "arbiter-fleet", "aaaa000000000000000000000000000000000000000000000000000000000000")
 	if err != nil {

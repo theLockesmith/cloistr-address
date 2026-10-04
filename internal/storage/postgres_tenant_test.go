@@ -86,10 +86,101 @@ func TestTenantQuotaPooling(t *testing.T) {
 	if q3.Limit == 1073741824 {
 		t.Fatal("after removal the member still sees the tenant limit; fallback is broken")
 	}
-	// The individual limit should be the anonymous default (whatever the DB has).
-	// The key assertion: it is NOT the tenant limit.
-	t.Logf("fallback confirmed: limit went from %d (tenant) to %d (individual), used=%d",
-		q.Limit, q3.Limit, q3.Used)
+	// Exact fallback: the removed key must see the same limit as a key that was
+	// never in a tenant, and only its own usage (not the pool's).
+	controlPK := randPubkey(t)
+	defer cleanupTenant(t, s, "", controlPK)
+	if err := s.EnsureUser(ctx, controlPK); err != nil {
+		t.Fatalf("EnsureUser control: %v", err)
+	}
+	ctl, err := s.EffectiveQuota(ctx, controlPK, "storage_bytes")
+	if err != nil {
+		t.Fatalf("EffectiveQuota (control): %v", err)
+	}
+	if q3.Limit != ctl.Limit {
+		t.Errorf("after removal limit = %d, want individual limit %d (same as a never-member key)", q3.Limit, ctl.Limit)
+	}
+	if q3.Used != 50000 {
+		t.Errorf("after removal used = %d, want 50000 (the member's own usage)", q3.Used)
+	}
+	if q3.Remaining != ctl.Limit-50000 {
+		t.Errorf("after removal remaining = %d, want %d", q3.Remaining, ctl.Limit-50000)
+	}
+	t.Logf("fallback confirmed: limit %d (tenant) -> %d (individual), used=%d remaining=%d",
+		q.Limit, q3.Limit, q3.Used, q3.Remaining)
+}
+
+// A member of a tenant that has no tenant_quotas row for the type keeps its
+// individual limit and own usage. This is the state of every member between
+// populating a tenant and setting its quota.
+func TestTenantWithoutQuotaRowUsesIndividualLimit(t *testing.T) {
+	s, done := testStore(t)
+	defer done()
+	ctx := context.Background()
+
+	ownerPK := randPubkey(t)
+	memberPK := randPubkey(t)
+	otherPK := randPubkey(t)
+	controlPK := randPubkey(t)
+	tenantID := "test-noquota-" + ownerPK[:8]
+	defer cleanupTenant(t, s, tenantID, ownerPK, memberPK, otherPK, controlPK)
+
+	if _, err := s.CreateTenant(ctx, tenantID, ownerPK); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	for _, pk := range []string{memberPK, otherPK} {
+		if err := s.AddTenantMember(ctx, tenantID, pk); err != nil {
+			t.Fatalf("AddTenantMember: %v", err)
+		}
+	}
+	if err := s.EnsureUser(ctx, controlPK); err != nil {
+		t.Fatalf("EnsureUser control: %v", err)
+	}
+	if err := s.RecordServiceUsage(ctx, memberPK, "storage_bytes", "blossom", 1000); err != nil {
+		t.Fatalf("RecordServiceUsage member: %v", err)
+	}
+	if err := s.RecordServiceUsage(ctx, otherPK, "storage_bytes", "blossom", 7000); err != nil {
+		t.Fatalf("RecordServiceUsage other: %v", err)
+	}
+
+	ctl, err := s.EffectiveQuota(ctx, controlPK, "storage_bytes")
+	if err != nil {
+		t.Fatalf("EffectiveQuota control: %v", err)
+	}
+	q, err := s.EffectiveQuota(ctx, memberPK, "storage_bytes")
+	if err != nil {
+		t.Fatalf("EffectiveQuota member: %v", err)
+	}
+	if q.Limit != ctl.Limit {
+		t.Errorf("limit = %d, want individual limit %d", q.Limit, ctl.Limit)
+	}
+	if q.Used != 1000 {
+		t.Errorf("used = %d, want 1000 (own usage only, not pooled)", q.Used)
+	}
+}
+
+// CreateTenant must work for an owner key that has no users row yet;
+// production's tenants.owner_pubkey references users(pubkey).
+func TestCreateTenantFreshOwner(t *testing.T) {
+	s, done := testStore(t)
+	defer done()
+	ctx := context.Background()
+
+	ownerPK := randPubkey(t)
+	tenantID := "test-fresh-" + ownerPK[:8]
+	defer cleanupTenant(t, s, tenantID, ownerPK)
+
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE pubkey = $1`, ownerPK).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("precondition: owner should have no users row (n=%d, err=%v)", n, err)
+	}
+	if _, err := s.CreateTenant(ctx, tenantID, ownerPK); err != nil {
+		t.Fatalf("CreateTenant with fresh owner: %v", err)
+	}
+	tn, err := s.GetTenant(ctx, tenantID)
+	if err != nil || tn == nil || tn.OwnerPubkey != ownerPK {
+		t.Fatalf("GetTenant = %+v, %v; want owner %s", tn, err, ownerPK)
+	}
 }
 
 func TestTenantListMembersAgainstProdSchema(t *testing.T) {

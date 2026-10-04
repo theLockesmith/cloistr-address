@@ -21,15 +21,34 @@ type TenantMember struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
-// CreateTenant inserts a new tenant. Returns ErrDuplicate if the id already exists.
+// CreateTenant inserts a new tenant. Also ensures the owner has a users row:
+// production's tenants.owner_pubkey references users(pubkey), so a fresh owner
+// key would otherwise fail the foreign key.
 func (s *Storage) CreateTenant(ctx context.Context, id, ownerPubkey string) (*Tenant, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO users (pubkey) VALUES ($1)
+		ON CONFLICT (pubkey) DO NOTHING
+	`, ownerPubkey)
+	if err != nil {
+		return nil, fmt.Errorf("ensure user for tenant owner: %w", err)
+	}
+
 	t := &Tenant{ID: id, OwnerPubkey: ownerPubkey}
-	err := s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO tenants (id, owner_pubkey) VALUES ($1, $2)
 		RETURNING created_at
 	`, id, ownerPubkey).Scan(&t.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit tenant: %w", err)
 	}
 	return t, nil
 }
