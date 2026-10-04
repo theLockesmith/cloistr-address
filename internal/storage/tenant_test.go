@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -131,5 +132,30 @@ func TestGetTenantForPubkey_NotFound(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestListTenantMembers_EmptyEncodesAsArray(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	s := NewWithDB(db)
+
+	mock.ExpectQuery("SELECT tenant_id, pubkey, joined_at FROM tenant_members").
+		WithArgs("arbiter-fleet").
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "pubkey", "joined_at"}))
+
+	members, err := s.ListTenantMembers(context.Background(), "arbiter-fleet")
+	if err != nil {
+		t.Fatalf("ListTenantMembers: %v", err)
+	}
+	b, err := json.Marshal(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "[]" {
+		t.Fatalf("empty member list encodes as %s, want []", b)
 	}
 }
