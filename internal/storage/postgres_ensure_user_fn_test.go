@@ -19,8 +19,10 @@ func TestEnsureUserFunction(t *testing.T) {
 
 	fresh := randPubkey(t)
 	defer cleanupPubkey(t, s, fresh)
-	for i := 0; i < 2; i++ {
-		if _, err := s.db.ExecContext(ctx, `SELECT public.ensure_user($1)`, fresh); err != nil {
+	// Positional and named forms: blossom's client contract names the
+	// argument check_pubkey.
+	for i, q := range []string{`SELECT public.ensure_user($1)`, `SELECT public.ensure_user(check_pubkey => $1)`} {
+		if _, err := s.db.ExecContext(ctx, q, fresh); err != nil {
 			t.Fatalf("ensure_user call %d: %v", i+1, err)
 		}
 	}
