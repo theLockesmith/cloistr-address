@@ -118,13 +118,15 @@ CREATE TABLE user_quotas (
     pubkey CHAR(64) NOT NULL,
     quota_type_id VARCHAR(50) NOT NULL,
     quota_limit BIGINT NOT NULL,
+    current_usage BIGINT NOT NULL DEFAULT 0,
+    last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (pubkey, quota_type_id)
 );
 
 -- Tenant tables matching PRODUCTION schema
 CREATE TABLE tenants (
     id VARCHAR(50) PRIMARY KEY,
-    display_name VARCHAR(255) NOT NULL DEFAULT '',
+    display_name VARCHAR(255) NOT NULL,
     owner_pubkey CHAR(64) NOT NULL REFERENCES users(pubkey),
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
