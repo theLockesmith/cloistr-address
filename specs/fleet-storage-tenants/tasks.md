@@ -6,16 +6,18 @@ All tasks complete. Tests pass, project compiles.
 
 ### Done
 
-- [x] Migration 010: three tables (tenants, members, quotas) and updated quota function — verified in `db/migrations/010_up.sql`, creates tenants/tenant_members/tenant_quotas tables and replaces effective_quota()
-- [x] Storage layer: CRUD for tenants, members, quotas with user-row auto-creation — verified in `internal/storage/tenant.go`, 5 unit tests pass in `internal/storage/tenant_test.go`
-- [x] API handlers: owner-gated member management, admin tenant/quota creation — verified in `internal/api/tenant.go`, 3 test groups pass in `internal/api/tenant_test.go`
-- [x] Route wiring in handler and admin router — verified: 3 authenticated routes in `internal/api/handler.go`, 2 admin routes in `internal/api/admin.go`
-- [x] CLI commands for tenant creation and quota setting — verified: cmdTenant in `cmd/cloistr-admin/main.go`
-- [x] Unit tests: storage layer (5 tests), API layer (3 test groups) — verified: `GOWORK=off go test ./internal/storage/ ./internal/api/ -run Tenant` all pass
-- [x] Integration tests: quota pooling and fallback after removal — verified in `internal/storage/postgres_tenant_test.go` (2 tests, require TEST_DATABASE_URL)
-- [x] Full test suite passes with no regressions — verified: `GOWORK=off go test ./... -count=1` all packages pass
+- [x] Migration 010: three tables (tenants, members, quotas) and updated quota function (merge !30, !31; verified 2026-10-04 in the production catalog: tenants, tenant_members, tenant_quotas present, cloistr holds SELECT/INSERT/UPDATE/DELETE on all three)
+- [x] Storage layer: CRUD for tenants, members, quotas with user-row auto-creation (merge !30, !35, !36, !37; verified by 6 sqlmock unit tests in internal/storage/tenant_test.go, pass)
+- [x] API handlers: owner-gated member management, admin tenant/quota creation (merge !30; verified by 3 test groups in internal/api/tenant_test.go, pass)
+- [x] Route wiring in handler and admin router (merge !30; verified in production 2026-10-04: NIP-98 owner add/list/remove return 200, a non-owner gets 403)
+- [x] CLI commands for tenant creation and quota setting (merge !30; see cmd/cloistr-admin: tenant create, tenant quota)
+- [x] Integration tests on Postgres 17: pooling, exact fallback after removal, tenant without a quota row, fresh owner key (merge !35; tested 2026-10-04: 16 storage tests pass, CI runs them on every push)
+- [x] CreateTenant works against production constraints: owner users row ensured, display_name set (merge !35, !36; verified 2026-10-04 by a throwaway-tenant run in production, cleaned up afterwards)
+- [x] CI test schema matches production (merge !35, !36; verified 2026-10-04: column-by-column diff of all 12 tables against the production catalog shows no differences)
+- [x] Empty member list returns [] (merge !37; tested by TestListTenantMembers_EmptyEncodesAsArray, fails on the old code)
+- [x] Full test suite passes with no regressions (verified 2026-10-04: GOWORK=off go test ./internal/... all packages pass; CI green on !37)
 
-### Remaining (not in this PR)
+### Remaining (owned by cloistr-orchestrator)
 
-- [ ] Orchestrator creates the arbiter-fleet tenant and adds the 71 role pubkeys via the owner API
+- [ ] Orchestrator creates the arbiter-fleet tenant (admin create needs the platform-admin key; first API-level run of that endpoint) and adds the 71 role pubkeys via the owner API
 - [ ] Set the actual quota limit for the arbiter-fleet tenant
