@@ -47,7 +47,7 @@ func TestAddTenantMember_EnsuresUser(t *testing.T) {
 	mock.ExpectExec("INSERT INTO users").
 		WithArgs(pk).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	// Then: insert tenant_members
+	// Then: insert tenant_members (with role and joined_at matching prod schema)
 	mock.ExpectExec("INSERT INTO tenant_members").
 		WithArgs("arbiter-fleet", pk).
 		WillReturnResult(sqlmock.NewResult(0, 1))

@@ -18,7 +18,7 @@ type Tenant struct {
 type TenantMember struct {
 	TenantID string    `json:"tenant_id"`
 	Pubkey   string    `json:"pubkey"`
-	AddedAt  time.Time `json:"added_at"`
+	JoinedAt time.Time `json:"joined_at"`
 }
 
 // CreateTenant inserts a new tenant. Returns ErrDuplicate if the id already exists.
@@ -69,7 +69,7 @@ func (s *Storage) AddTenantMember(ctx context.Context, tenantID, pubkey string) 
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO tenant_members (tenant_id, pubkey) VALUES ($1, $2)
+		INSERT INTO tenant_members (tenant_id, pubkey, role, joined_at) VALUES ($1, $2, 'member', NOW())
 		ON CONFLICT (tenant_id, pubkey) DO NOTHING
 	`, tenantID, pubkey)
 	if err != nil {
@@ -93,8 +93,8 @@ func (s *Storage) RemoveTenantMember(ctx context.Context, tenantID, pubkey strin
 // ListTenantMembers returns all members of a tenant.
 func (s *Storage) ListTenantMembers(ctx context.Context, tenantID string) ([]TenantMember, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT tenant_id, pubkey, added_at FROM tenant_members
-		WHERE tenant_id = $1 ORDER BY added_at
+		SELECT tenant_id, pubkey, joined_at FROM tenant_members
+		WHERE tenant_id = $1 ORDER BY joined_at
 	`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list tenant members: %w", err)
@@ -104,7 +104,7 @@ func (s *Storage) ListTenantMembers(ctx context.Context, tenantID string) ([]Ten
 	var members []TenantMember
 	for rows.Next() {
 		var m TenantMember
-		if err := rows.Scan(&m.TenantID, &m.Pubkey, &m.AddedAt); err != nil {
+		if err := rows.Scan(&m.TenantID, &m.Pubkey, &m.JoinedAt); err != nil {
 			return nil, fmt.Errorf("scan tenant member: %w", err)
 		}
 		members = append(members, m)
