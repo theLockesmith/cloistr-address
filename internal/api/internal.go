@@ -51,9 +51,7 @@ func (h *Handler) internalAuthMiddleware() gin.HandlerFunc {
 		expectedAuth := "Bearer " + h.cfg.InternalAPI.Secret
 
 		if authHeader != expectedAuth {
-			slog.Warn("invalid internal API authentication attempt",
-				"client_ip", c.ClientIP(),
-			)
+			slog.Warn("invalid internal API authentication attempt", clientAddrAttrs(c)...)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid authorization",
 			})
