@@ -48,10 +48,27 @@ func NewHandler(cfg *config.Config, store *storage.Storage) *Handler {
 	return h
 }
 
+// newEngine is gin.New with the client address taken from X-Real-IP.
+//
+// Gin's default trusts every proxy, so ClientIP() returned the leftmost
+// X-Forwarded-For entry, which is whatever the client sent: the public edge
+// nginx only appends to XFF. It does SET X-Real-IP to the real peer,
+// overwriting any client value, so that header is the client address. With no
+// trusted proxies, a request without X-Real-IP (in-cluster) falls back to the
+// TCP peer and XFF is never consulted.
+func newEngine() *gin.Engine {
+	r := gin.New()
+	r.TrustedPlatform = "X-Real-IP"
+	if err := r.SetTrustedProxies(nil); err != nil {
+		panic(err) // nil is always valid
+	}
+	return r
+}
+
 // Router creates and configures the Gin router
 func (h *Handler) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
+	r := newEngine()
 
 	// Middleware
 	r.Use(gin.Recovery())
