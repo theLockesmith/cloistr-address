@@ -65,6 +65,24 @@ func newEngine() *gin.Engine {
 	return r
 }
 
+// clientAddrAttrs are the log attributes naming who sent a request.
+//
+// X-Real-IP is only trustworthy on traffic that came through the public edge,
+// which overwrites it. /internal/ has no public route: it is called pod to pod,
+// so nothing overwrites X-Real-IP there and any in-cluster caller can set it.
+// For those requests the TCP peer is the address, and X-Real-IP is logged only
+// as a labelled claim.
+func clientAddrAttrs(c *gin.Context) []any {
+	if strings.HasPrefix(c.Request.URL.Path, "/internal/") {
+		attrs := []any{"peer_addr", c.RemoteIP()}
+		if claimed := c.GetHeader("X-Real-IP"); claimed != "" {
+			attrs = append(attrs, "claimed_x_real_ip", claimed)
+		}
+		return attrs
+	}
+	return []any{"client_ip", c.ClientIP(), "peer_addr", c.RemoteIP()}
+}
+
 // Router creates and configures the Gin router
 func (h *Handler) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
@@ -267,13 +285,12 @@ func (h *Handler) loggingMiddleware() gin.HandlerFunc {
 		latency := time.Since(start)
 		status := c.Writer.Status()
 
-		slog.Info("http request",
+		slog.Info("http request", append([]any{
 			"method", c.Request.Method,
 			"path", path,
 			"status", status,
 			"latency_ms", latency.Milliseconds(),
-			"client_ip", c.ClientIP(),
-		)
+		}, clientAddrAttrs(c)...)...)
 	}
 }
 
