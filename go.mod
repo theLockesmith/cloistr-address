@@ -1,9 +1,9 @@
 module git.aegis-hq.xyz/coldforge/cloistr-me
 
-go 1.25.0
+go 1.26.6
 
 require (
-	git.aegis-hq.xyz/coldforge/cloistr-common v0.3.0
+	git.aegis-hq.xyz/coldforge/cloistr-common v0.4.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/lib/pq v1.12.3
