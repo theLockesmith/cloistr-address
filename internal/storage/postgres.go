@@ -898,6 +898,62 @@ func (s *Storage) AddCredits(ctx context.Context, pubkey string, amountSats int6
 	return nil
 }
 
+// InvoiceCreditReasons are the credit reasons keyed on a BTCPay invoice id,
+// at most one row per invoice (migration 012's partial unique index).
+const (
+	CreditReasonRaceLoss          = "race_loss"
+	CreditReasonRegistrationError = "registration_error"
+)
+
+// AddInvoiceCreditOnce credits pubkey for a settled invoice it could not be
+// given the name for, at most once per invoice. BTCPay redelivers a webhook
+// the service answered with a 5xx, so this runs again for the same invoice;
+// the history row goes in first, ON CONFLICT DO NOTHING against the unique
+// index, and the balance only moves when that insert happened. A concurrent
+// duplicate blocks on the index until the first commits, then does nothing.
+//
+// Returns credited=false when the invoice had already been credited.
+func (s *Storage) AddInvoiceCreditOnce(ctx context.Context, pubkey string, amountSats int64, reason, invoiceID string) (credited bool, err error) {
+	if invoiceID == "" {
+		return false, fmt.Errorf("invoice credit needs an invoice id")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // ErrTxDone after Commit is expected
+
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO credit_history (pubkey, amount_sats, reason, reference_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (reference_id) WHERE reason IN ('race_loss', 'registration_error') DO NOTHING
+	`, pubkey, amountSats, reason, invoiceID)
+	if err != nil {
+		return false, fmt.Errorf("failed to record credit history: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return false, fmt.Errorf("failed to read credit history insert: %w", err)
+	} else if n == 0 {
+		return false, nil
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO pubkey_credits (pubkey, balance_sats)
+		VALUES ($1, $2)
+		ON CONFLICT (pubkey) DO UPDATE SET
+			balance_sats = pubkey_credits.balance_sats + $2,
+			updated_at = NOW()
+	`, pubkey, amountSats)
+	if err != nil {
+		return false, fmt.Errorf("failed to update credits: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("failed to commit: %w", err)
+	}
+	return true, nil
+}
+
 // DeductCredits deducts credits from a pubkey if sufficient balance.
 // Returns ErrInsufficientCredits when the balance is too low.
 // amountSats == 0 is a no-op (always succeeds, never creates a history entry).
