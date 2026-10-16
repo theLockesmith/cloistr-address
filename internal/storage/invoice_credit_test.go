@@ -143,6 +143,7 @@ func TestAddInvoiceCreditOnce_WithoutIndexFailsClosed(t *testing.T) {
 	if err == nil || credited {
 		t.Fatalf("without the index = (%v, %v), want an error and no credit", credited, err)
 	}
+	t.Logf("expected error without the index: %v", err)
 	var history, balances int
 	if err := db.QueryRow(`SELECT count(*) FROM ` + schema + `.credit_history`).Scan(&history); err != nil {
 		t.Fatal(err)
