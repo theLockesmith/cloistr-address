@@ -107,7 +107,7 @@ func TestGetPurchaseStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if tc.wantCode == http.StatusOK && tc.invoice.Status == btcpay.StatusSettled {
 				q := mock.ExpectQuery("FROM addresses").WithArgs("alice", "cloistr.xyz")
 				if tc.addrOwner == "" {
