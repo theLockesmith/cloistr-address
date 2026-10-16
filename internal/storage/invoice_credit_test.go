@@ -102,3 +102,55 @@ func TestAddInvoiceCreditOnce_ConcurrentDeliveriesCreditOnce(t *testing.T) {
 		t.Fatalf("balance = %d, want 1000", got)
 	}
 }
+
+// Migration 012's index is what the ON CONFLICT clause names. The migration
+// runner does not stop on a failed statement, so the index could be absent in
+// a deployment; this proves that fails closed: an error, and neither a history
+// row nor a balance change (no silent credit that a redelivery could repeat).
+func TestAddInvoiceCreditOnce_WithoutIndexFailsClosed(t *testing.T) {
+	base, done := testStore(t)
+	defer done()
+	ctx := context.Background()
+
+	schema := "noidx_" + randPubkey(t)[:12]
+	conn, err := base.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	setup := []string{
+		`CREATE SCHEMA ` + schema,
+		// credit_history WITHOUT its indexes, so no credit_history_invoice_credit_once.
+		`CREATE TABLE ` + schema + `.credit_history (LIKE public.credit_history INCLUDING DEFAULTS INCLUDING CONSTRAINTS)`,
+		`CREATE TABLE ` + schema + `.pubkey_credits (LIKE public.pubkey_credits INCLUDING ALL)`,
+		`SET search_path TO ` + schema,
+	}
+	for _, q := range setup {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	defer func() { _, _ = base.db.Exec(`DROP SCHEMA ` + schema + ` CASCADE`) }()
+
+	// Pin the Storage to that one connection so every statement sees the schema.
+	db := base.db
+	db.SetMaxOpenConns(1)
+	_ = conn.Close() // return the connection, search_path set, to the pool of one
+	s := &Storage{db: db}
+
+	pk := randPubkey(t)
+	credited, err := s.AddInvoiceCreditOnce(ctx, pk, 1000, CreditReasonRaceLoss, "inv-noidx")
+	if err == nil || credited {
+		t.Fatalf("without the index = (%v, %v), want an error and no credit", credited, err)
+	}
+	var history, balances int
+	if err := db.QueryRow(`SELECT count(*) FROM ` + schema + `.credit_history`).Scan(&history); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM ` + schema + `.pubkey_credits`).Scan(&balances); err != nil {
+		t.Fatal(err)
+	}
+	if history != 0 || balances != 0 {
+		t.Fatalf("failed credit left %d history and %d balance rows, want 0 and 0", history, balances)
+	}
+}
