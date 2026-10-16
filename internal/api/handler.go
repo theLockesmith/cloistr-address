@@ -147,6 +147,7 @@ func (h *Handler) Router() *gin.Engine {
 		// Purchase flow (race-based: first payment wins)
 		authAPI.POST("/purchase/quote", h.getPurchaseQuote)
 		authAPI.POST("/purchase/invoice", h.createPurchaseInvoice)
+		authAPI.GET("/purchase/status/:invoiceId", h.getPurchaseStatus)
 		// Anything else in the catalog — storage top-ups today. Named
 		// /purchase/product rather than overloading /purchase/invoice, which is
 		// address-shaped down to its request body.
