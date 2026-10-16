@@ -212,3 +212,23 @@ BEGIN
         CASE WHEN eff_limit = 0 THEN 0::BIGINT ELSE GREATEST(0, eff_limit - used_total) END;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Credits (production definitions, measured 2026-10-16; the updated_at
+-- trigger is omitted, the code sets updated_at itself)
+CREATE TABLE pubkey_credits (
+    pubkey VARCHAR(64) PRIMARY KEY CONSTRAINT pubkey_format CHECK (pubkey ~ '^[a-f0-9]{64}$'),
+    balance_sats BIGINT NOT NULL DEFAULT 0 CONSTRAINT balance_non_negative CHECK (balance_sats >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE credit_history (
+    id SERIAL PRIMARY KEY,
+    pubkey VARCHAR(64) NOT NULL,
+    amount_sats INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    reference_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_credit_history_pubkey ON credit_history(pubkey);
+CREATE INDEX idx_credit_history_created ON credit_history(created_at);

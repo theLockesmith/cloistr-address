@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
+	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
 // handleBTCPayWebhook processes BTCPay webhook notifications
@@ -104,17 +105,19 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 		return
 	}
 
-	// Get invoice details for amount (in case of overpayment credits)
+	// The amount is what the buyer gets credited if they cannot have the
+	// name. Without it a race loss would credit 0 and answer 200, keeping the
+	// money; so a failed lookup is a 500 and BTCPay redelivers. Every failure
+	// below that would leave a payer with neither the name nor the credit is a
+	// 500 for the same reason, and the credit is once per invoice so a
+	// redelivery cannot pay out twice.
 	invoice, err := h.btcpay.GetInvoice(ctx, event.InvoiceID)
 	if err != nil {
 		slog.Error("failed to get invoice details", "invoice_id", event.InvoiceID, "error", err)
-		// Continue anyway - we'll use 0 for amount if needed
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Invoice lookup failed"})
+		return
 	}
-
-	var amountSats int64
-	if invoice != nil {
-		amountSats = int64(invoice.Amount)
-	}
+	amountSats := int64(invoice.Amount)
 
 	// Attempt atomic registration (race-based: first payment wins)
 	addr, err := h.store.AtomicRegisterAddress(ctx, username, h.cfg.Domain, pubkey, false)
@@ -127,8 +130,10 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 		)
 		// Credit the user since we couldn't register
 		if amountSats > 0 {
-			if err := h.store.AddCredits(ctx, pubkey, amountSats, "registration_error", event.InvoiceID); err != nil {
-				slog.Error("failed to credit user after error", "pubkey", pubkey, "error", err)
+			if _, err := h.store.AddInvoiceCreditOnce(ctx, pubkey, amountSats, storage.CreditReasonRegistrationError, event.InvoiceID); err != nil {
+				slog.Error("failed to credit user after error", "pubkey", pubkey, "invoice_id", event.InvoiceID, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Credit failed"})
+				return
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Registration failed, credited"})
@@ -144,10 +149,14 @@ func (h *Handler) handleBTCPayWebhook(c *gin.Context) {
 			"invoice_id", event.InvoiceID,
 		)
 		if amountSats > 0 {
-			if err := h.store.AddCredits(ctx, pubkey, amountSats, "race_loss", event.InvoiceID); err != nil {
-				slog.Error("failed to credit user after race loss", "pubkey", pubkey, "error", err)
-				c.JSON(http.StatusOK, gin.H{"status": "error", "message": "Credit failed"})
+			credited, err := h.store.AddInvoiceCreditOnce(ctx, pubkey, amountSats, storage.CreditReasonRaceLoss, event.InvoiceID)
+			if err != nil {
+				slog.Error("failed to credit user after race loss", "pubkey", pubkey, "invoice_id", event.InvoiceID, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Credit failed"})
 				return
+			}
+			if !credited {
+				slog.Info("race loss already credited for this invoice", "invoice_id", event.InvoiceID)
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{

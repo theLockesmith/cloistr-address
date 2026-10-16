@@ -39,11 +39,15 @@ test:unit:
   variables:
     GO_TEST_PACKAGES: "./internal/..."
     TEST_DATABASE_URL: "postgres://cloistr:testpass@postgres:5432/cloistr?sslmode=disable"
+    # -v so the log names each test: a DB-integration test that skipped is
+    # otherwise indistinguishable from one that passed.
+    GO_TEST_EXTRA: "-v"
   before_script:
     - !reference [.go-test, before_script]
     - apt-get install -y --no-install-recommends postgresql-client
     - PGPASSWORD=testpass psql -h postgres -U cloistr -d cloistr -f db/test_schema.sql
     - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/011_up.sql
+    - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/012_up.sql
 
 # 25m, not the template's 15m default. golangci-lint analysed this module
 # cleanly ("0 issues.") and then exited 1 on "Timeout exceeded" at 15m52s
