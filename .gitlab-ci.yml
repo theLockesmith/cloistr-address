@@ -49,6 +49,34 @@ test:unit:
     - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/011_up.sql
     - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/012_up.sql
 
+# Migration 010 must rerun as a non-owner, because the init container reapplies
+# every *_up.sql on each pod start as cloistr, and production's tenant tables
+# are owned by postgres. Fail-first: the pre-fix 010 (from aed91984) must FAIL
+# this check, and the current one must pass.
+migrations:rerun-010:
+  stage: test
+  extends: [.cloistr-rules]
+  image: postgres:17-bookworm
+  services:
+    - name: postgres:17-bookworm
+      alias: postgres
+      variables:
+        POSTGRES_DB: cloistr
+        POSTGRES_USER: cloistr
+        POSTGRES_PASSWORD: testpass
+  variables:
+    PGHOST: postgres
+    PGUSER: cloistr
+    PGPASSWORD: testpass
+    PGDATABASE: cloistr
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git >/dev/null
+  script:
+    - git show aed91984:db/migrations/010_up.sql > /tmp/010_before_fix.sql
+    - if sh db/ci/test_010_rerun.sh /tmp/010_before_fix.sql; then echo "pre-fix 010 unexpectedly reran cleanly"; exit 1; else echo "pre-fix 010 fails the rerun, as expected"; fi
+    - sh db/ci/test_010_rerun.sh db/migrations/010_up.sql
+
 # 25m, not the template's 15m default. golangci-lint analysed this module
 # cleanly ("0 issues.") and then exited 1 on "Timeout exceeded" at 15m52s
 # (pipeline 27356) — the deadline killed it AFTER the work was done, turning a

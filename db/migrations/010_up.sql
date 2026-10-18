@@ -50,7 +50,19 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 );
 
 -- Index: look up which tenant a pubkey belongs to (the hot path in effective_quota).
-CREATE INDEX IF NOT EXISTS idx_tenant_members_pubkey ON tenant_members(pubkey);
+--
+-- Guarded by an existence check, not just IF NOT EXISTS. Postgres checks table
+-- ownership before IF NOT EXISTS, and in production tenant_members is owned by
+-- postgres while migrations run as cloistr, so the bare statement failed with
+-- "must be owner of table tenant_members" on every pod start (the index has
+-- existed since the first apply). The check makes a rerun a no-op.
+DO $idx$
+BEGIN
+    IF to_regclass('public.idx_tenant_members_pubkey') IS NULL THEN
+        CREATE INDEX idx_tenant_members_pubkey ON tenant_members(pubkey);
+    END IF;
+END
+$idx$;
 
 -- 2. Updated effective_quota() with tenant awareness -----------------------------
 --
