@@ -48,6 +48,7 @@ test:unit:
     - PGPASSWORD=testpass psql -h postgres -U cloistr -d cloistr -f db/test_schema.sql
     - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/011_up.sql
     - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/012_up.sql
+    - PGPASSWORD=testpass psql -v ON_ERROR_STOP=1 -h postgres -U cloistr -d cloistr -f db/migrations/013_up.sql
 
 # Migration 010 must rerun as a non-owner, because the init container reapplies
 # every *_up.sql on each pod start as cloistr, and production's tenant tables
