@@ -666,7 +666,7 @@ func (s *Storage) RegisterAddress(ctx context.Context, username, domain, pubkey 
 	addr := &Address{}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at)
-		VALUES ($1, $2, $3, true, false, $4, $4, NOW(), NOW())
+		VALUES ($1, $2, $3, true, true, $4, $4, NOW(), NOW())
 		RETURNING id, username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at
 	`, username, domain, pubkey, isFirst).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
@@ -765,11 +765,13 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		}
 	}
 
-	// Register the address.
+	// Register the address. verified=TRUE: it belongs to the pubkey that
+	// authenticated or paid for it, and cloistr-email refuses to send from (or
+	// open mail for) an unverified address.
 	addr := &Address{}
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO addresses (username, domain, pubkey, active, verified, is_primary, nip05_active, auto_assigned, created_at, updated_at)
-		VALUES ($1, $2, $3, true, false, $4, $4, $5, NOW(), NOW())
+		VALUES ($1, $2, $3, true, true, $4, $4, $5, NOW(), NOW())
 		RETURNING id, username, domain, pubkey, active, verified, is_primary, nip05_active, created_at, updated_at
 	`, username, domain, pubkey, makePrimary, autoAssigned).Scan(
 		&addr.ID, &addr.Username, &addr.Domain, &addr.Pubkey,
