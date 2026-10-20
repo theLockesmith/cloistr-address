@@ -176,6 +176,10 @@ func (h *Handler) Router() *gin.Engine {
 		// Address verification (used by cloistr-email to verify ownership)
 		internalAPI.GET("/addresses/verify", h.verifyAddress)
 
+		// Address provisioning (used by cloistr-email on sign-in, so an identity
+		// that never opens Me still gets a deliverable address)
+		internalAPI.POST("/addresses/ensure", h.internalEnsureAddress)
+
 		// Quota check + usage recording (for services without a direct DB connection)
 		internalAPI.GET("/quotas/check", h.checkQuota)
 		internalAPI.POST("/quotas/usage", h.recordQuotaUsage)
@@ -236,7 +240,8 @@ func (h *Handler) nip98AuthMiddleware(validator *auth.NIP98Validator) gin.Handle
 		// The address still gets provisioned on every other authenticated path,
 		// which is what keeps mail delivery and zaps working for an identity that
 		// never claims a name.
-		if !isNameClaimPath(c.Request.URL.Path) {
+		// /addresses/me ensures synchronously in its handler instead.
+		if !isNameClaimPath(c.Request.URL.Path) && !isSyncEnsurePath(c.Request.URL.Path) {
 			go func(pk string) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
