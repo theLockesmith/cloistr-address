@@ -741,6 +741,13 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 	`, pubkey).Scan(&existingActive, &existingRealActive); err != nil {
 		return nil, fmt.Errorf("count existing addresses: %w", err)
 	}
+	// An auto-assigned address is only for an identity with none. EnsureAutoAddress
+	// counts before this transaction, so a concurrent ensure may have committed one
+	// since: re-check here, or it would add a second, non-primary auto address.
+	// (Concurrent ensures that both see zero here are left to idx_addresses_one_primary.)
+	if autoAssigned && existingActive > 0 {
+		return nil, nil
+	}
 	isFirst := existingActive == 0
 	// Promote when this is a real name and every existing active address is auto-assigned.
 	promote := !isFirst && !autoAssigned && existingRealActive == 0

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -50,7 +51,7 @@ func (h *Handler) internalAuthMiddleware() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		expectedAuth := "Bearer " + h.cfg.InternalAPI.Secret
 
-		if authHeader != expectedAuth {
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
 			slog.Warn("invalid internal API authentication attempt", clientAddrAttrs(c)...)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid authorization",
