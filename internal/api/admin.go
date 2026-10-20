@@ -138,6 +138,13 @@ func (h *Handler) adminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		if !isAdmin {
+			// "Am I an admin?" has an ordinary answer for a signed-in non-admin.
+			// admin-ui asks it on every visit; a 403 here logged a failed request
+			// and made every non-admin view look broken. Every other route stays 403.
+			if c.Request.Method == http.MethodGet && c.FullPath() == "/admin/v1/me" {
+				c.AbortWithStatusJSON(http.StatusOK, gin.H{"pubkey": pubkey, "is_platform_admin": false})
+				return
+			}
 			slog.Warn("admin API access denied", "pubkey", safePrefix(pubkey), "path", c.Request.URL.Path)
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Not a platform admin"})
 			return
