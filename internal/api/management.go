@@ -149,8 +149,9 @@ func (h *Handler) getMyAddress(c *gin.Context) {
 	ctx := c.Request.Context()
 	pubkey := auth.GetPubkey(c)
 
-	// Look up the primary address.
-	address, err := h.store.GetPrimaryAddressByPubkey(ctx, pubkey)
+	// Look up the primary address, creating the auto-assigned one first for an
+	// identity that has none, so its first visit shows it rather than a 404.
+	address, _, err := h.ensurePrimaryAddress(ctx, pubkey)
 	if err != nil {
 		slog.Error("failed to get primary address", "pubkey", pubkey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})

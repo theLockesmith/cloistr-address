@@ -31,6 +31,13 @@ CREATE TABLE addresses (
     auto_assigned BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Production's unique indexes (migration 005 and the original schema; read
+-- from production 2026-10-20). Without them the test database accepts what
+-- production refuses: concurrent first ensures created up to 11 primaries here.
+CREATE UNIQUE INDEX addresses_unique_username ON addresses(username, domain);
+CREATE UNIQUE INDEX idx_addresses_one_primary ON addresses(pubkey) WHERE is_primary;
+CREATE UNIQUE INDEX idx_addresses_one_nip05 ON addresses(pubkey) WHERE nip05_active;
+
 CREATE TABLE address_lightning (
     address_id INTEGER NOT NULL PRIMARY KEY,
     mode VARCHAR(20) NOT NULL DEFAULT 'disabled',
