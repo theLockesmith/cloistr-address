@@ -331,6 +331,28 @@ func (s *Storage) IsUsernameAvailable(ctx context.Context, username string) (boo
 	return available, nil
 }
 
+// IsUsernameReserved reports whether username is held in reserved_usernames
+// with no specific pubkey (a system-reserved word such as admin/root/support),
+// as distinct from merely being claimed by an existing active address. It is
+// NOT the availability gate -- IsUsernameAvailable/is_username_available
+// already covers both cases -- this exists only so the availability-check
+// endpoint can report an accurate `reason` (ME-7: "Username is not available"
+// told the user nothing about WHY, and the UI had no reason text to show
+// either way).
+func (s *Storage) IsUsernameReserved(ctx context.Context, username string) (bool, error) {
+	var reserved bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM reserved_usernames
+			WHERE username = LOWER($1) AND reserved_for_pubkey IS NULL
+		)
+	`, username).Scan(&reserved)
+	if err != nil {
+		return false, fmt.Errorf("failed to check reserved username: %w", err)
+	}
+	return reserved, nil
+}
+
 // CanRegisterUsername checks if a specific pubkey can register a username
 func (s *Storage) CanRegisterUsername(ctx context.Context, username, pubkey string) (bool, error) {
 	var canRegister bool
