@@ -136,7 +136,19 @@ func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 		response.Tier = priced.Tier
 		response.Additional = priced.Additional
 	} else {
-		response.Reason = "Username is not available"
+		// Default to "taken"; override to the more specific "reserved" message
+		// when reserved_usernames confirms it (system words like admin/root/
+		// support, inserted with no owning pubkey -- see migration 014). A
+		// lookup failure here does not change the available=false verdict
+		// (that already came from the authoritative is_username_available
+		// check above), it just falls back to the generic reason text.
+		response.Reason = "Username is already taken."
+		reserved, rerr := h.store.IsUsernameReserved(ctx, username)
+		if rerr != nil {
+			slog.Warn("failed to check reserved status for availability reason", "username", username, "error", rerr)
+		} else if reserved {
+			response.Reason = "This username is reserved."
+		}
 	}
 
 	c.JSON(http.StatusOK, response)
