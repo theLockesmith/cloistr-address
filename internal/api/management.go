@@ -375,8 +375,11 @@ func (h *Handler) transferAddress(c *gin.Context) {
 		return
 	}
 
-	// Validate new pubkey format (64 hex chars)
-	if len(req.NewPubkey) != 64 {
+	// Validate new pubkey format: 64 hex chars, stored lowercase like every
+	// other pubkey. A length check alone let a typo give the address to a key
+	// no signer will ever produce.
+	req.NewPubkey = strings.ToLower(req.NewPubkey)
+	if !validPubkey(req.NewPubkey) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pubkey format"})
 		return
 	}
