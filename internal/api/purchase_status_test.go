@@ -96,8 +96,7 @@ func TestGetPurchaseStatus(t *testing.T) {
 		{"expired", addressInvoice(btcpay.StatusExpired), buyerPubkey, "INV123", "", http.StatusOK, PurchaseStatusExpired},
 		{"invalid", addressInvoice(btcpay.StatusInvalid), buyerPubkey, "INV123", "", http.StatusOK, PurchaseStatusFailed},
 		{"another pubkey's invoice", addressInvoice(btcpay.StatusSettled), otherPubkey, "INV123", "", http.StatusNotFound, ""},
-		{"not an address purchase", btcpay.Invoice{ID: "INV123", Status: btcpay.StatusSettled, Metadata: map[string]any{
-			MetaKind: KindProduct, MetaProductID: "storage_topup_10", MetaPubkey: buyerPubkey}}, buyerPubkey, "INV123", "", http.StatusNotFound, ""},
+		// Product invoices (storage top-ups) are covered by TestGetPurchaseStatus_Product.
 		{"unknown invoice", addressInvoice(btcpay.StatusNew), buyerPubkey, "NOPE", "", http.StatusNotFound, ""},
 		{"malformed id never reaches BTCPay", addressInvoice(btcpay.StatusNew), buyerPubkey, "..%2Fwebhooks", "", http.StatusNotFound, ""},
 	}
