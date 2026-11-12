@@ -239,3 +239,22 @@ CREATE TABLE credit_history (
 );
 CREATE INDEX idx_credit_history_pubkey ON credit_history(pubkey);
 CREATE INDEX idx_credit_history_created ON credit_history(created_at);
+
+-- products: platform catalog (unified-platform-schema.sql).
+CREATE TABLE products (
+    id VARCHAR(50) PRIMARY KEY,
+    display_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    price_sats BIGINT NOT NULL,
+    product_type VARCHAR(20) NOT NULL,
+    billing_period VARCHAR(20),
+    grants_service_access VARCHAR(50)[],
+    grants_quota_increases JSONB,
+    bundle_id VARCHAR(50),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT product_type_check CHECK (product_type IN ('one_time', 'subscription')),
+    CONSTRAINT billing_period_check CHECK (
+        (product_type = 'subscription' AND billing_period IS NOT NULL) OR
+        (product_type = 'one_time' AND billing_period IS NULL)
+    )
+);

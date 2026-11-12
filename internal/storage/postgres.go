@@ -438,6 +438,41 @@ func (s *Storage) GetProduct(ctx context.Context, productID string) (*Product, e
 	return &p, nil
 }
 
+// StorageTopup is an enabled one-time product that adds storage_bytes.
+type StorageTopup struct {
+	ID           string
+	DisplayName  string
+	Description  string
+	PriceSats    int64
+	StorageBytes int64
+}
+
+// ListStorageTopups returns the storage top-ups on sale, cheapest first.
+func (s *Storage) ListStorageTopups(ctx context.Context) ([]StorageTopup, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, display_name, COALESCE(description, ''), price_sats,
+		       (grants_quota_increases->>'storage_bytes')::bigint
+		FROM products
+		WHERE COALESCE(enabled, TRUE)
+		  AND product_type = 'one_time'
+		  AND grants_quota_increases ? 'storage_bytes'
+		ORDER BY price_sats, id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list storage top-ups: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []StorageTopup
+	for rows.Next() {
+		var p StorageTopup
+		if err := rows.Scan(&p.ID, &p.DisplayName, &p.Description, &p.PriceSats, &p.StorageBytes); err != nil {
+			return nil, fmt.Errorf("failed to read storage top-up: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // AddQuotaGrant records quota bought for a pubkey.
 //
 // expiresAt nil means the grant does not lapse. reference_id is the invoice ID,

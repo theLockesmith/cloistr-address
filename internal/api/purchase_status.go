@@ -27,14 +27,17 @@ var invoiceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // PurchaseStatusResponse is what the purchase page polls for.
 type PurchaseStatusResponse struct {
-	Status   string `json:"status"`
-	Username string `json:"username,omitempty"`
+	Status    string `json:"status"`
+	Username  string `json:"username,omitempty"`
+	ProductID string `json:"product_id,omitempty"`
 	// Reason explains a failed settled purchase: "name_taken" means another
 	// payment won the race and the webhook credited this one instead.
 	Reason string `json:"reason,omitempty"`
 }
 
-// getPurchaseStatus reports where an address purchase stands.
+// getPurchaseStatus reports where an address or product purchase stands.
+// For a product (storage top-up), "completed" means the webhook has recorded
+// the quota grant for this invoice.
 // GET /api/v1/purchase/status/:invoiceId
 //
 // The purchase page polled this route for as long as it existed, but it was
@@ -65,8 +68,13 @@ func (h *Handler) getPurchaseStatus(c *gin.Context) {
 
 	owner, _ := invoice.Metadata[MetaPubkey].(string)
 	username, _ := invoice.Metadata[MetaUsername].(string)
-	if owner == "" || owner != pubkey || settlementKind(invoice.Metadata) != KindAddress {
+	kind := settlementKind(invoice.Metadata)
+	if owner == "" || owner != pubkey || (kind != KindAddress && kind != KindProduct) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Invoice not found"})
+		return
+	}
+	if kind == KindProduct {
+		h.productPurchaseStatus(c, invoiceID, invoice)
 		return
 	}
 
@@ -100,5 +108,37 @@ func (h *Handler) getPurchaseStatus(c *gin.Context) {
 		resp.Status = PurchaseStatusPending
 	}
 
+	c.JSON(http.StatusOK, resp)
+}
+
+// productPurchaseStatus is getPurchaseStatus for a product invoice, which the
+// caller has already been checked to own.
+func (h *Handler) productPurchaseStatus(c *gin.Context, invoiceID string, invoice *btcpay.Invoice) {
+	productID, _ := invoice.Metadata[MetaProductID].(string)
+	resp := PurchaseStatusResponse{ProductID: productID}
+	switch invoice.Status {
+	case btcpay.StatusNew:
+		resp.Status = PurchaseStatusPending
+	case btcpay.StatusProcessing:
+		resp.Status = PurchaseStatusProcessing
+	case btcpay.StatusExpired:
+		resp.Status = PurchaseStatusExpired
+	case btcpay.StatusInvalid:
+		resp.Status = PurchaseStatusFailed
+	case btcpay.StatusSettled:
+		granted, err := h.store.QuotaGrantExists(c.Request.Context(), invoiceID)
+		if err != nil {
+			slog.Error("purchase status: grant lookup failed", "invoice_id", invoiceID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
+			return
+		}
+		if granted {
+			resp.Status = PurchaseStatusCompleted
+		} else {
+			resp.Status = PurchaseStatusProcessing
+		}
+	default:
+		resp.Status = PurchaseStatusPending
+	}
 	c.JSON(http.StatusOK, resp)
 }
