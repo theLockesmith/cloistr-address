@@ -62,3 +62,26 @@ func TestReservedForOwner_OwnerCanRegister(t *testing.T) {
 		t.Fatalf("AtomicRegisterAddress by the reserved pubkey returned nil: the owner can never claim %q", name)
 	}
 }
+
+func TestReservedForOwner_AvailableToOwnerOnly(t *testing.T) {
+	s, done := testStore(t)
+	defer done()
+	ctx := context.Background()
+	owner, other := randPubkey(t), randPubkey(t)
+	const name = "askedbyowner"
+	reserveFor(t, s, name, owner)
+
+	for _, tc := range []struct {
+		who    string
+		pubkey string
+		want   bool
+	}{{"owner", owner, true}, {"other pubkey", other, false}, {"anonymous", "", false}} {
+		got, err := s.IsUsernameAvailableFor(ctx, name, tc.pubkey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("IsUsernameAvailableFor(%q) as %s = %v, want %v", name, tc.who, got, tc.want)
+		}
+	}
+}

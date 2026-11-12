@@ -101,7 +101,7 @@ func (h *Handler) getPurchaseQuote(c *gin.Context) {
 	}
 
 	// Check availability
-	available, err := h.store.IsUsernameAvailable(ctx, username)
+	available, err := h.store.IsUsernameAvailableFor(ctx, username, pubkey)
 	if err != nil {
 		slog.Error("failed to check username", "username", username, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
@@ -172,7 +172,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 	}
 
 	// Check availability (informational - race may still occur)
-	available, err := h.store.IsUsernameAvailable(ctx, username)
+	available, err := h.store.IsUsernameAvailableFor(ctx, username, pubkey)
 	if err != nil {
 		slog.Error("failed to check username", "username", username, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})
