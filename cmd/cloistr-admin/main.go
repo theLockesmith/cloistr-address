@@ -2,14 +2,20 @@
 // (see arbiter/cloistr/architecture/admin-interface.md). Every request is signed
 // as a NIP-98 event; mutations bind the request body via the payload tag.
 //
-// Auth (v1): the signing key comes from CLOISTR_ADMIN_NSEC (nsec1... or 64-hex).
-// This is break-glass local signing for a trusted operator workstation; NIP-46
-// bunker signing (no key on disk) is the planned follow-up and the model the
-// admin UI uses. The API base URL comes from CLOISTR_ADMIN_API.
+// Auth: requests are signed by a NIP-46 remote signer (a "bunker") named by
+// --bunker or CLOISTR_ADMIN_BUNKER, so the admin key never enters this process.
+// The CLI keeps its own NIP-46 client key in CLOISTR_ADMIN_CLIENT_KEY_FILE
+// (default <user config dir>/cloistr-admin/nip46-client.key, created 0600 on
+// first use). Keep that file: the bunker authorizes this client key once, and
+// its connect secret may be single-use.
+//
+// CLOISTR_ADMIN_NSEC (nsec1... or 64-hex) remains as break-glass local signing
+// and warns on every use. Setting both is refused. The API base URL comes from
+// CLOISTR_ADMIN_API.
 //
 // Usage:
 //
-//	cloistr-admin me
+//	cloistr-admin [--bunker bunker://...] me
 //	cloistr-admin address grant   --user <pubkey> --handle <name> [--domain d] [--display-name n]
 //	cloistr-admin address revoke  --handle <name> [--domain d] --reason <r>
 //	cloistr-admin address transfer --handle <name> --to <pubkey> [--domain d]
@@ -32,55 +38,33 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
+
+	"git.aegis-hq.xyz/coldforge/cloistr-common/crypto"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
-	}
-	args := os.Args[1:]
-	group := args[0]
+var errUsage = errors.New("usage")
 
-	var err error
-	switch group {
-	case "me":
-		err = doRequest(http.MethodGet, "/admin/v1/me", nil)
-	case "address":
-		err = cmdAddress(args[1:])
-	case "reserve":
-		err = cmdReserve(args[1:])
-	case "quota":
-		err = cmdQuota(args[1:])
-	case "credits":
-		err = cmdCredits(args[1:])
-	case "tier":
-		err = cmdTier(args[1:])
-	case "tenant":
-		err = cmdTenant(args[1:])
-	case "audit":
-		err = cmdAudit(args[1:])
-	case "-h", "--help", "help":
-		usage()
-		return
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", group)
-		usage()
+func main() {
+	err := run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+	if errors.Is(err, errUsage) {
 		os.Exit(2)
 	}
 	if err != nil {
@@ -89,16 +73,88 @@ func main() {
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `cloistr-admin — Cloistr internal admin CLI
-Env: CLOISTR_ADMIN_API (base URL, e.g. https://me.cloistr.xyz), CLOISTR_ADMIN_NSEC (nsec1... or 64-hex)
+// cli carries what one invocation needs. env is the environment lookup
+// (os.Getenv in production) so tests never touch the process environment.
+type cli struct {
+	env    func(string) string
+	stdout io.Writer
+	stderr io.Writer
+	bunker string // --bunker, which overrides CLOISTR_ADMIN_BUNKER
+
+	signer      crypto.Signer
+	closeSigner func()
+}
+
+func run(args []string, env func(string) string, stdout, stderr io.Writer) error {
+	c := &cli{env: env, stdout: stdout, stderr: stderr}
+	defer func() {
+		if c.closeSigner != nil {
+			c.closeSigner()
+		}
+	}()
+
+	// Global flags come before the command group.
+	for len(args) > 0 && strings.HasPrefix(args[0], "--bunker") {
+		if v, ok := strings.CutPrefix(args[0], "--bunker="); ok {
+			c.bunker = v
+			args = args[1:]
+			continue
+		}
+		if args[0] != "--bunker" || len(args) < 2 {
+			fmt.Fprintln(stderr, "--bunker needs a bunker:// URL")
+			return errUsage
+		}
+		c.bunker = args[1]
+		args = args[2:]
+	}
+	if len(args) == 0 {
+		usage(stderr)
+		return errUsage
+	}
+
+	switch group := args[0]; group {
+	case "me":
+		return c.do(http.MethodGet, "/admin/v1/me", nil)
+	case "address":
+		return c.cmdAddress(args[1:])
+	case "reserve":
+		return c.cmdReserve(args[1:])
+	case "quota":
+		return c.cmdQuota(args[1:])
+	case "credits":
+		return c.cmdCredits(args[1:])
+	case "tier":
+		return c.cmdTier(args[1:])
+	case "tenant":
+		return c.cmdTenant(args[1:])
+	case "audit":
+		return c.cmdAudit(args[1:])
+	case "-h", "--help", "help":
+		usage(stderr)
+		return nil
+	default:
+		fmt.Fprintf(stderr, "unknown command %q\n", group)
+		usage(stderr)
+		return errUsage
+	}
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `cloistr-admin — Cloistr internal admin CLI
+Usage: cloistr-admin [--bunker bunker://...] <command> ...
+Env:
+  CLOISTR_ADMIN_API              base URL, e.g. https://me.cloistr.xyz
+  CLOISTR_ADMIN_BUNKER           bunker:// URL of the NIP-46 signer holding the admin key
+  CLOISTR_ADMIN_CLIENT_KEY_FILE  this CLI's own NIP-46 client key (default: user config dir)
+  CLOISTR_ADMIN_BUNKER_TIMEOUT   how long to wait for the bunker (default 30s)
+  CLOISTR_ADMIN_NSEC             break-glass only: sign with a local key
 Run "cloistr-admin help" and see the package doc for the full command list.
 `)
 }
 
 // --- command groups ---
 
-func cmdAddress(a []string) error {
+func (c *cli) cmdAddress(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("address subcommand required (grant|revoke|transfer|lightning|list)")
 	}
@@ -122,19 +178,19 @@ func cmdAddress(a []string) error {
 		if *display != "" {
 			body["display_name"] = *display
 		}
-		return doRequest(http.MethodPost, "/admin/v1/addresses/grant", body)
+		return c.do(http.MethodPost, "/admin/v1/addresses/grant", body)
 	case "revoke":
 		body := map[string]any{"username": *handle, "reason": *reason}
 		if *domain != "" {
 			body["domain"] = *domain
 		}
-		return doRequest(http.MethodPost, "/admin/v1/addresses/revoke", body)
+		return c.do(http.MethodPost, "/admin/v1/addresses/revoke", body)
 	case "transfer":
 		body := map[string]any{"username": *handle, "to_pubkey": *to}
 		if *domain != "" {
 			body["domain"] = *domain
 		}
-		return doRequest(http.MethodPost, "/admin/v1/addresses/transfer", body)
+		return c.do(http.MethodPost, "/admin/v1/addresses/transfer", body)
 	case "lightning":
 		body := map[string]any{"username": *handle, "mode": *mode}
 		if *lnAddr != "" {
@@ -143,15 +199,15 @@ func cmdAddress(a []string) error {
 		if *domain != "" {
 			body["domain"] = *domain
 		}
-		return doRequest(http.MethodPost, "/admin/v1/addresses/lightning", body)
+		return c.do(http.MethodPost, "/admin/v1/addresses/lightning", body)
 	case "list":
-		return doRequest(http.MethodGet, "/admin/v1/addresses?pubkey="+url.QueryEscape(*user), nil)
+		return c.do(http.MethodGet, "/admin/v1/addresses?pubkey="+url.QueryEscape(*user), nil)
 	default:
 		return fmt.Errorf("unknown address subcommand %q", a[0])
 	}
 }
 
-func cmdReserve(a []string) error {
+func (c *cli) cmdReserve(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("reserve subcommand required (add|remove|list)")
 	}
@@ -170,17 +226,17 @@ func cmdReserve(a []string) error {
 		if *reason != "" {
 			body["reason"] = *reason
 		}
-		return doRequest(http.MethodPost, "/admin/v1/reserved", body)
+		return c.do(http.MethodPost, "/admin/v1/reserved", body)
 	case "remove":
-		return doRequest(http.MethodDelete, "/admin/v1/reserved/"+url.PathEscape(*handle), nil)
+		return c.do(http.MethodDelete, "/admin/v1/reserved/"+url.PathEscape(*handle), nil)
 	case "list":
-		return doRequest(http.MethodGet, "/admin/v1/reserved", nil)
+		return c.do(http.MethodGet, "/admin/v1/reserved", nil)
 	default:
 		return fmt.Errorf("unknown reserve subcommand %q", a[0])
 	}
 }
 
-func cmdQuota(a []string) error {
+func (c *cli) cmdQuota(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("quota subcommand required (set|reset|get)")
 	}
@@ -192,17 +248,17 @@ func cmdQuota(a []string) error {
 
 	switch a[0] {
 	case "set":
-		return doRequest(http.MethodPost, "/admin/v1/quotas", map[string]any{"pubkey": *user, "quota_type_id": *qtype, "limit": *limit})
+		return c.do(http.MethodPost, "/admin/v1/quotas", map[string]any{"pubkey": *user, "quota_type_id": *qtype, "limit": *limit})
 	case "reset":
-		return doRequest(http.MethodPost, "/admin/v1/quotas/reset", map[string]any{"pubkey": *user, "quota_type_id": *qtype})
+		return c.do(http.MethodPost, "/admin/v1/quotas/reset", map[string]any{"pubkey": *user, "quota_type_id": *qtype})
 	case "get":
-		return doRequest(http.MethodGet, "/admin/v1/quotas?pubkey="+url.QueryEscape(*user), nil)
+		return c.do(http.MethodGet, "/admin/v1/quotas?pubkey="+url.QueryEscape(*user), nil)
 	default:
 		return fmt.Errorf("unknown quota subcommand %q", a[0])
 	}
 }
 
-func cmdCredits(a []string) error {
+func (c *cli) cmdCredits(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("credits subcommand required (grant|get)")
 	}
@@ -219,15 +275,15 @@ func cmdCredits(a []string) error {
 		if *ref != "" {
 			body["reference_id"] = *ref
 		}
-		return doRequest(http.MethodPost, "/admin/v1/credits/grant", body)
+		return c.do(http.MethodPost, "/admin/v1/credits/grant", body)
 	case "get":
-		return doRequest(http.MethodGet, "/admin/v1/credits?pubkey="+url.QueryEscape(*user), nil)
+		return c.do(http.MethodGet, "/admin/v1/credits?pubkey="+url.QueryEscape(*user), nil)
 	default:
 		return fmt.Errorf("unknown credits subcommand %q", a[0])
 	}
 }
 
-func cmdTier(a []string) error {
+func (c *cli) cmdTier(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("tier subcommand required (list|update)")
 	}
@@ -239,15 +295,15 @@ func cmdTier(a []string) error {
 
 	switch a[0] {
 	case "list":
-		return doRequest(http.MethodGet, "/admin/v1/tiers", nil)
+		return c.do(http.MethodGet, "/admin/v1/tiers", nil)
 	case "update":
-		return doRequest(http.MethodPut, "/admin/v1/tiers", map[string]any{"tier_name": *name, "price_sats": *price, "enabled": !*disabled})
+		return c.do(http.MethodPut, "/admin/v1/tiers", map[string]any{"tier_name": *name, "price_sats": *price, "enabled": !*disabled})
 	default:
 		return fmt.Errorf("unknown tier subcommand %q", a[0])
 	}
 }
 
-func cmdAudit(a []string) error {
+func (c *cli) cmdAudit(a []string) error {
 	if len(a) == 0 || a[0] != "tail" {
 		return fmt.Errorf("audit subcommand required (tail)")
 	}
@@ -265,17 +321,17 @@ func cmdAudit(a []string) error {
 	if *actor != "" {
 		q.Set("actor", *actor)
 	}
-	return doRequest(http.MethodGet, "/admin/v1/audit?"+q.Encode(), nil)
+	return c.do(http.MethodGet, "/admin/v1/audit?"+q.Encode(), nil)
 }
 
 // --- HTTP + NIP-98 signing ---
 
-func doRequest(method, path string, body map[string]any) error {
-	base := strings.TrimRight(os.Getenv("CLOISTR_ADMIN_API"), "/")
+func (c *cli) do(method, path string, body map[string]any) error {
+	base := strings.TrimRight(c.env("CLOISTR_ADMIN_API"), "/")
 	if base == "" {
 		return fmt.Errorf("CLOISTR_ADMIN_API not set")
 	}
-	sk, err := loadSecretKey()
+	signer, err := c.loadSigner()
 	if err != nil {
 		return err
 	}
@@ -290,7 +346,9 @@ func doRequest(method, path string, body map[string]any) error {
 		}
 	}
 
-	authHeader, err := signNIP98(sk, method, fullURL, bodyBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), c.bunkerTimeout())
+	authHeader, err := signNIP98(ctx, signer, method, fullURL, bodyBytes)
+	cancel()
 	if err != nil {
 		return fmt.Errorf("sign request: %w", err)
 	}
@@ -318,9 +376,9 @@ func doRequest(method, path string, body map[string]any) error {
 	// Pretty-print JSON when possible.
 	var pretty bytes.Buffer
 	if json.Indent(&pretty, respBody, "", "  ") == nil {
-		fmt.Println(pretty.String())
+		fmt.Fprintln(c.stdout, pretty.String())
 	} else {
-		fmt.Println(string(respBody))
+		fmt.Fprintln(c.stdout, string(respBody))
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
@@ -328,9 +386,9 @@ func doRequest(method, path string, body map[string]any) error {
 	return nil
 }
 
-// signNIP98 builds a kind-27235 event over method+URL (+payload hash for bodies)
-// and returns the "Nostr <base64>" Authorization header value.
-func signNIP98(sk, method, fullURL string, body []byte) (string, error) {
+// signNIP98 builds a kind-27235 event over method+URL (+payload hash for bodies),
+// has signer sign it, and returns the "Nostr <base64>" Authorization header value.
+func signNIP98(ctx context.Context, signer crypto.Signer, method, fullURL string, body []byte) (string, error) {
 	tags := nostr.Tags{
 		nostr.Tag{"u", fullURL},
 		nostr.Tag{"method", method},
@@ -345,7 +403,7 @@ func signNIP98(sk, method, fullURL string, body []byte) (string, error) {
 		Tags:      tags,
 		Content:   "",
 	}
-	if err := ev.Sign(sk); err != nil {
+	if err := signer.SignEvent(ctx, &ev); err != nil {
 		return "", err
 	}
 	raw, err := json.Marshal(ev)
@@ -355,12 +413,119 @@ func signNIP98(sk, method, fullURL string, body []byte) (string, error) {
 	return "Nostr " + base64.StdEncoding.EncodeToString(raw), nil
 }
 
-// loadSecretKey reads CLOISTR_ADMIN_NSEC (nsec1... or 64-hex) and returns hex.
-func loadSecretKey() (string, error) {
-	raw := strings.TrimSpace(os.Getenv("CLOISTR_ADMIN_NSEC"))
-	if raw == "" {
-		return "", fmt.Errorf("CLOISTR_ADMIN_NSEC not set")
+// --- signer selection ---
+
+const defaultBunkerTimeout = 30 * time.Second
+
+func (c *cli) bunkerTimeout() time.Duration {
+	if d, err := time.ParseDuration(c.env("CLOISTR_ADMIN_BUNKER_TIMEOUT")); err == nil && d > 0 {
+		return d
 	}
+	return defaultBunkerTimeout
+}
+
+// loadSigner picks the signer once per invocation: the bunker when one is
+// named, otherwise the break-glass local key. Both at once is refused, so a
+// forgotten CLOISTR_ADMIN_NSEC cannot linger beside a working bunker.
+func (c *cli) loadSigner() (crypto.Signer, error) {
+	if c.signer != nil {
+		return c.signer, nil
+	}
+	bunker := strings.TrimSpace(c.bunker)
+	if bunker == "" {
+		bunker = strings.TrimSpace(c.env("CLOISTR_ADMIN_BUNKER"))
+	}
+	nsec := strings.TrimSpace(c.env("CLOISTR_ADMIN_NSEC"))
+
+	switch {
+	case bunker != "" && nsec != "":
+		return nil, fmt.Errorf("both a bunker and CLOISTR_ADMIN_NSEC are set; unset CLOISTR_ADMIN_NSEC so the admin key stays in the bunker")
+	case bunker != "":
+		keyPath, err := c.clientKeyPath()
+		if err != nil {
+			return nil, err
+		}
+		clientSK, err := loadClientKey(keyPath)
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), c.bunkerTimeout())
+		defer cancel()
+		s, err := crypto.ConnectNIP46Signer(ctx, clientSK, bunker)
+		if err != nil {
+			return nil, fmt.Errorf("connect to bunker: %w", err)
+		}
+		c.signer, c.closeSigner = s, s.Close
+	case nsec != "":
+		fmt.Fprintln(c.stderr, "warning: signing with CLOISTR_ADMIN_NSEC (break-glass). The admin key is in this process's environment; use --bunker or CLOISTR_ADMIN_BUNKER for normal work.")
+		sk, err := decodeSecretKey(nsec)
+		if err != nil {
+			return nil, err
+		}
+		s, err := crypto.NewLocalSigner(sk)
+		if err != nil {
+			return nil, fmt.Errorf("CLOISTR_ADMIN_NSEC: %w", err)
+		}
+		c.signer = s
+	default:
+		return nil, fmt.Errorf("no signer: set CLOISTR_ADMIN_BUNKER (or pass --bunker) to the bunker:// URL of the signer holding the admin key; CLOISTR_ADMIN_NSEC is break-glass only")
+	}
+	return c.signer, nil
+}
+
+func (c *cli) clientKeyPath() (string, error) {
+	if p := strings.TrimSpace(c.env("CLOISTR_ADMIN_CLIENT_KEY_FILE")); p != "" {
+		return p, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("no config dir for the NIP-46 client key; set CLOISTR_ADMIN_CLIENT_KEY_FILE: %w", err)
+	}
+	return filepath.Join(dir, "cloistr-admin", "nip46-client.key"), nil
+}
+
+// loadClientKey returns this CLI's NIP-46 client key (hex), creating it on
+// first use. The key identifies the CLI to the bunker, not the admin: it can
+// ask the bunker to sign, and only because the bunker authorized it once. A
+// key readable by other users is refused, as ssh refuses a loose private key.
+func loadClientKey(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		sk, _, err := crypto.GenerateKeypair()
+		if err != nil {
+			return "", fmt.Errorf("generate NIP-46 client key: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return "", fmt.Errorf("NIP-46 client key dir: %w", err)
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return "", fmt.Errorf("create NIP-46 client key: %w", err)
+		}
+		_, werr := f.WriteString(sk + "\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return "", fmt.Errorf("write NIP-46 client key: %w", werr)
+		}
+		return sk, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read NIP-46 client key: %w", err)
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("NIP-46 client key %s is readable by other users; chmod 600 it", path)
+	}
+	sk := strings.TrimSpace(string(raw))
+	if err := crypto.ValidateSecretKey(sk); err != nil {
+		return "", fmt.Errorf("NIP-46 client key %s: %w", path, err)
+	}
+	return sk, nil
+}
+
+// decodeSecretKey accepts nsec1... or 64-hex and returns hex.
+func decodeSecretKey(raw string) (string, error) {
 	if strings.HasPrefix(raw, "nsec1") {
 		prefix, val, err := nip19.Decode(raw)
 		if err != nil {
@@ -384,7 +549,7 @@ func loadSecretKey() (string, error) {
 	return "", fmt.Errorf("CLOISTR_ADMIN_NSEC must be nsec1... or 64-hex")
 }
 
-func cmdTenant(a []string) error {
+func (c *cli) cmdTenant(a []string) error {
 	if len(a) == 0 {
 		return fmt.Errorf("tenant subcommand required (create|quota)")
 	}
@@ -397,12 +562,12 @@ func cmdTenant(a []string) error {
 
 	switch a[0] {
 	case "create":
-		return doRequest(http.MethodPost, "/admin/v1/tenants", map[string]any{
+		return c.do(http.MethodPost, "/admin/v1/tenants", map[string]any{
 			"id":           *id,
 			"owner_pubkey": *owner,
 		})
 	case "quota":
-		return doRequest(http.MethodPost, "/admin/v1/tenants/quota", map[string]any{
+		return c.do(http.MethodPost, "/admin/v1/tenants/quota", map[string]any{
 			"tenant_id":  *id,
 			"quota_type": *qtype,
 			"limit":      *limit,
