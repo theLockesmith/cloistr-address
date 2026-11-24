@@ -132,6 +132,10 @@ func (h *Handler) Router() *gin.Engine {
 		// caller-specific price still comes from the availability check above.
 		api.GET("/pricing/tiers", h.listPricingTiers)
 
+		// Storage top-ups on sale, from the same catalog. Public for the same
+		// reason; buying one is the NIP-98 POST /purchase/product below.
+		api.GET("/products/storage", h.listStorageTopups)
+
 		// BTCPay webhook (no auth - signature verified in handler)
 		api.POST("/webhook/payment", h.handleBTCPayWebhook)
 	}
