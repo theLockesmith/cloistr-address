@@ -3,6 +3,11 @@ FROM registry.aegis-hq.xyz/coldforge/cloistr-me/golang:1.25-alpine AS builder
 
 WORKDIR /build
 
+# go.mod asks for a newer Go than this mirrored 1.25 image ships (cloistr-common
+# v0.5.0 requires 1.26.6). The official image sets GOTOOLCHAIN=local, which
+# refuses to build; auto fetches the toolchain go.mod names.
+ENV GOTOOLCHAIN=auto
+
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
