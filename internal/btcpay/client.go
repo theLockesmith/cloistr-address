@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -182,6 +183,23 @@ const (
 // invoices.
 var ErrPaymentMethodUnavailable = errors.New("btcpay: lightning payment method unavailable")
 
+// ErrInvoiceTimeout is BTCPay not answering an invoice create within our
+// deadline. Seen while the Lightning node was still starting: the same
+// transient trouble as ErrPaymentMethodUnavailable, so callers answer it the
+// same way. It is still never retried here: unlike the 400, an abandoned create
+// may have made an invoice server-side.
+var ErrInvoiceTimeout = errors.New("btcpay: invoice create timed out")
+
+// isTimeout reports whether a transport error was a deadline or client timeout,
+// as opposed to, say, a refused connection.
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
 // isTransientLNFailure reports whether a BTCPay error response is the Lightning
 // timeout above rather than a real rejection.
 //
@@ -257,6 +275,9 @@ func (c *Client) CreateInvoice(ctx context.Context, amountSats int64, metadata m
 		attemptCancel()
 
 		if err != nil {
+			if isTimeout(err) {
+				return nil, fmt.Errorf("btcpay create invoice: %w: %w", ErrInvoiceTimeout, err)
+			}
 			return nil, fmt.Errorf("btcpay create invoice: %w", err)
 		}
 

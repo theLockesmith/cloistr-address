@@ -11,7 +11,6 @@ import (
 
 	nameval "git.aegis-hq.xyz/coldforge/cloistr-common/username"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/auth"
-	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/btcpay"
 	"git.aegis-hq.xyz/coldforge/cloistr-me/internal/storage"
 )
 
@@ -343,14 +342,7 @@ func (h *Handler) createPurchaseInvoice(c *gin.Context) {
 		// request was wrong". The first is transient, retrying genuinely works,
 		// and 500 tells the user nothing they can act on. It is reported as 503
 		// so the UI can say "try again" and mean it.
-		if errors.Is(err, btcpay.ErrPaymentMethodUnavailable) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":   "Lightning is temporarily unavailable, please try again",
-				"retries": true,
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invoice"})
+		writeInvoiceError(c, err)
 		return
 	}
 
