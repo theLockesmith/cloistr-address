@@ -102,7 +102,9 @@ func (h *Handler) checkUsernameAvailability(c *gin.Context) {
 	}
 
 	// Check availability
-	available, err := h.store.IsUsernameAvailable(ctx, username)
+	// Answered for the caller when signed in: a name reserved for them is
+	// available to them, and shows as taken to everyone else.
+	available, err := h.store.IsUsernameAvailableFor(ctx, username, auth.GetPubkey(c))
 	if err != nil {
 		slog.Error("failed to check username availability", "username", username, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service error"})

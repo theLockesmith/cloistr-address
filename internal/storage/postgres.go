@@ -321,10 +321,26 @@ func (s *Storage) UpdateNWCError(ctx context.Context, addressID int64, errorMsg 
 	return err
 }
 
-// IsUsernameAvailable checks if a username is available for registration
+// IsUsernameAvailable checks if a username is available to an anonymous
+// visitor: a name reserved for any pubkey counts as unavailable.
 func (s *Storage) IsUsernameAvailable(ctx context.Context, username string) (bool, error) {
+	return s.IsUsernameAvailableFor(ctx, username, "")
+}
+
+// IsUsernameAvailableFor checks if pubkey can register username. A name
+// reserved for a specific pubkey is available to that pubkey and to nobody
+// else. is_username_available() only refuses reservations with no owner, so
+// the owned case is checked here rather than by changing the shared function.
+func (s *Storage) IsUsernameAvailableFor(ctx context.Context, username, pubkey string) (bool, error) {
 	var available bool
-	err := s.db.QueryRowContext(ctx, `SELECT is_username_available($1)`, username).Scan(&available)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT is_username_available($1) AND NOT EXISTS (
+			SELECT 1 FROM reserved_usernames
+			WHERE username = LOWER($1)
+			  AND reserved_for_pubkey IS NOT NULL
+			  AND LOWER(reserved_for_pubkey) <> LOWER($2)
+		)
+	`, username, pubkey).Scan(&available)
 	if err != nil {
 		return false, fmt.Errorf("failed to check username availability: %w", err)
 	}
@@ -738,10 +754,14 @@ func (s *Storage) AtomicRegisterAddress(ctx context.Context, username, domain, p
 		return nil, nil // Username taken
 	}
 
-	// Check reserved
+	// Check reserved. A name reserved for this pubkey is theirs to claim.
 	err = tx.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM reserved_usernames WHERE username = $1)
-	`, username).Scan(&exists)
+		SELECT EXISTS(
+			SELECT 1 FROM reserved_usernames
+			WHERE username = $1
+			  AND (reserved_for_pubkey IS NULL OR LOWER(reserved_for_pubkey) <> LOWER($2))
+		)
+	`, username, pubkey).Scan(&exists)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check reserved: %w", err)
 	}
