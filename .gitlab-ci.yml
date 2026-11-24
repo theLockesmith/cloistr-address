@@ -37,7 +37,8 @@ test:unit:
         POSTGRES_USER: cloistr
         POSTGRES_PASSWORD: testpass
   variables:
-    GO_TEST_PACKAGES: "./internal/..."
+    # ./cmd/... too: cloistr-admin has tests, some against the real database.
+    GO_TEST_PACKAGES: "./internal/... ./cmd/..."
     TEST_DATABASE_URL: "postgres://cloistr:testpass@postgres:5432/cloistr?sslmode=disable"
     # -v so the log names each test: a DB-integration test that skipped is
     # otherwise indistinguishable from one that passed.
