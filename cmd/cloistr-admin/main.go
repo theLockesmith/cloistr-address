@@ -68,7 +68,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
@@ -101,7 +101,7 @@ func run(args []string, env func(string) string, stdout, stderr io.Writer) error
 			continue
 		}
 		if args[0] != "--bunker" || len(args) < 2 {
-			fmt.Fprintln(stderr, "--bunker needs a bunker:// URL")
+			_, _ = fmt.Fprintln(stderr, "--bunker needs a bunker:// URL")
 			return errUsage
 		}
 		c.bunker = args[1]
@@ -133,14 +133,14 @@ func run(args []string, env func(string) string, stdout, stderr io.Writer) error
 		usage(stderr)
 		return nil
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n", group)
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", group)
 		usage(stderr)
 		return errUsage
 	}
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `cloistr-admin — Cloistr internal admin CLI
+	_, _ = fmt.Fprint(w, `cloistr-admin — Cloistr internal admin CLI
 Usage: cloistr-admin [--bunker bunker://...] <command> ...
 Env:
   CLOISTR_ADMIN_API              base URL, e.g. https://me.cloistr.xyz
@@ -376,9 +376,9 @@ func (c *cli) do(method, path string, body map[string]any) error {
 	// Pretty-print JSON when possible.
 	var pretty bytes.Buffer
 	if json.Indent(&pretty, respBody, "", "  ") == nil {
-		fmt.Fprintln(c.stdout, pretty.String())
+		_, _ = fmt.Fprintln(c.stdout, pretty.String())
 	} else {
-		fmt.Fprintln(c.stdout, string(respBody))
+		_, _ = fmt.Fprintln(c.stdout, string(respBody))
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
@@ -457,7 +457,7 @@ func (c *cli) loadSigner() (crypto.Signer, error) {
 		}
 		c.signer, c.closeSigner = s, s.Close
 	case nsec != "":
-		fmt.Fprintln(c.stderr, "warning: signing with CLOISTR_ADMIN_NSEC (break-glass). The admin key is in this process's environment; use --bunker or CLOISTR_ADMIN_BUNKER for normal work.")
+		_, _ = fmt.Fprintln(c.stderr, "warning: signing with CLOISTR_ADMIN_NSEC (break-glass). The admin key is in this process's environment; use --bunker or CLOISTR_ADMIN_BUNKER for normal work.")
 		sk, err := decodeSecretKey(nsec)
 		if err != nil {
 			return nil, err

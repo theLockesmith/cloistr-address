@@ -258,3 +258,84 @@ CREATE TABLE products (
         (product_type = 'one_time' AND billing_period IS NULL)
     )
 );
+
+-- audit_log, copied from arbiter/cloistr/schemas/unified-platform-schema.sql (base
+-- table + the admin hash-chain section). Every admin mutation writes a row here,
+-- so without it no admin write path can be tested against the database.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id SERIAL PRIMARY KEY,
+
+    -- What changed
+    table_name VARCHAR(50) NOT NULL,
+    record_id TEXT,  -- Primary key of affected record
+    action VARCHAR(50) NOT NULL,
+
+    -- Who/what
+    actor_pubkey CHAR(64),
+    actor_type VARCHAR(20) NOT NULL DEFAULT 'user',  -- 'user', 'system', 'webhook'
+
+    -- When
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Details
+    old_values JSONB,
+    new_values JSONB,
+    metadata JSONB,
+
+    -- Request context
+    ip_address INET,
+    user_agent TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_table ON audit_log(table_name);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_pubkey);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_record ON audit_log(table_name, record_id);
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS subject_pubkey CHAR(64);
+-- pgcrypto for digest(); no-op if already present.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Non-repudiation + tamper-evident chaining on the existing audit_log.
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS signature TEXT;   -- NIP-98 schnorr sig (hex) of the admin action
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS prev_hash TEXT;   -- chain tip at insert time
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entry_hash TEXT;  -- sha256(prev_hash || canonical(row))
+
+-- Hash-chain trigger: entry_hash links each row to the previous, so any edit/delete
+-- of historical rows is detectable by re-walking the chain. A txn-level advisory lock
+-- serializes concurrent inserts so the chain can't fork.
+CREATE OR REPLACE FUNCTION audit_log_chain() RETURNS TRIGGER AS $$
+DECLARE
+    tip TEXT;
+    payload TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('audit_log_chain'));
+
+    SELECT entry_hash INTO tip
+    FROM audit_log
+    WHERE entry_hash IS NOT NULL
+    ORDER BY id DESC
+    LIMIT 1;
+
+    NEW.prev_hash := tip;  -- NULL for the very first entry
+
+    payload := coalesce(NEW.prev_hash, '')
+        || '|' || coalesce(NEW.table_name, '')
+        || '|' || coalesce(NEW.record_id, '')
+        || '|' || coalesce(NEW.action, '')
+        || '|' || coalesce(NEW.actor_pubkey, '')
+        || '|' || coalesce(NEW.actor_type, '')
+        || '|' || coalesce(NEW.old_values::text, '')
+        || '|' || coalesce(NEW.new_values::text, '')
+        || '|' || coalesce(NEW.signature, '')
+        || '|' || coalesce(to_char(NEW.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '');
+
+    NEW.entry_hash := encode(digest(payload, 'sha256'), 'hex');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_audit_log_chain ON audit_log;
+CREATE TRIGGER trg_audit_log_chain
+    BEFORE INSERT ON audit_log
+    FOR EACH ROW EXECUTE FUNCTION audit_log_chain();
